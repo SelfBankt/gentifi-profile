@@ -1,9 +1,9 @@
 {
   "spec_version": "0.1",
   "business": {
-    "id": "gtf_kingswoodplumbing",
-    "name": "Kingswood Plumbing & Heating",
-    "description": "Sole-trader plumber. Boiler servicing, leaks, bathroom fitting. Gas Safe registered.",
+    "id": "gtf_brooksideplumbing",
+    "name": "Brookside Plumbing & Heating",
+    "description": "Fictional example. Sole-trader plumber. Boiler servicing, leaks, bathroom fitting. Gas Safe registered.",
     "categories": ["Plumber"],
     "tags": ["trades", "gas_safe"],
     "location": {
@@ -14,7 +14,7 @@
     "opening_hours": [
       { "days": ["mon", "tue", "wed", "thu", "fri"], "opens": "08:00", "closes": "18:00" }
     ],
-    "contact": { "phone": "+44 1179 000001" },
+    "contact": { "phone": "+44 117 496 0001" },
     "languages": ["en-GB"],
     "verification": { "status": "claimed", "methods": ["phone"] },
     "identifiers": { "gas_safe": "000000" }

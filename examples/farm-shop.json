@@ -3,7 +3,7 @@
   "business": {
     "id": "gtf_hollowbrookfarm",
     "name": "Hollowbrook Farm Shop",
-    "description": "Family farm selling free-range eggs, seasonal veg and lamb. Farm tours for small groups.",
+    "description": "Fictional example. Family farm selling free-range eggs, seasonal veg and lamb. Farm tours for small groups.",
     "categories": [
       "Store"
     ],
@@ -44,7 +44,7 @@
       }
     ],
     "contact": {
-      "phone": "+44 1179 000000",
+      "phone": "+44 117 496 0000",
       "website": "https://example.org"
     },
     "languages": [
@@ -57,7 +57,7 @@
         "postcard"
       ],
       "verified_at": "2026-10-01T10:00:00Z",
-      "verified_by": "gentifi.org"
+      "verified_by": "gentifi.com"
     }
   },
   "offerings": [

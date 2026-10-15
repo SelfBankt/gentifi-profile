@@ -74,7 +74,7 @@ Design choices worth knowing:
 - Money is in minor units (`amount_minor: 350` = £3.50) to avoid rounding errors.
 - Field names follow [schema.org](https://schema.org) where a close equivalent exists.
 - Vertical-specific fields go in `extensions` under reverse-domain keys
-  (e.g. `org.gentifi.farm`), so the core stays small.
+  (e.g. `com.gentifi.farm`), so the core stays small.
 - The format is protocol-neutral. The same profile can be served over MCP,
   published as structured data on a website, or carried by agent-to-agent and
   agent-commerce protocols.

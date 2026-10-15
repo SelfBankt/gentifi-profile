@@ -1,6 +1,5 @@
 <!--
 Copy for the Developers page on the Gentifi website.
-Replace REPO_URL with the public GitHub link before publishing.
 About 350 words; the repo README holds the detail.
 -->
 
@@ -56,19 +55,19 @@ website, or carried by other agent protocols. The repository includes:
 - **A reference MCP server** you can point Claude, ChatGPT or any MCP client at
 
 ```bash
-git clone REPO_URL && cd gentifi-profile
+git clone https://github.com/SelfBankt/gentifi-profile && cd gentifi-profile
 pip install -e ".[server]"
 gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
 # --now freezes the clock so the example data stays fresh
 ```
 
-[View on GitHub →](REPO_URL)
+[View on GitHub →](https://github.com/SelfBankt/gentifi-profile)
 
 ## Help shape it
 
 This is a draft, and it will change based on what breaks in real use. If you've
 tried to describe a real business and something didn't fit, or an agent got
-confused, please [open an issue](REPO_URL/issues).
+confused, please [open an issue](https://github.com/SelfBankt/gentifi-profile/issues).
 
 Running a business rather than building agents? Gentifi can set up and keep your
 profile current for you — [Gentifi your business →](/)

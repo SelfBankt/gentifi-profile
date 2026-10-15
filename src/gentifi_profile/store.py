@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import math
+import secrets
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -142,7 +143,10 @@ class RequestBook:
 
     def __init__(self, directory: Directory):
         self.directory = directory
-        self.by_request: dict[str, dict[str, Any]] = {}   # request_id -> receipt
+        # (business_id, request_id) -> receipt. Keys are per business, so one agent's
+        # request_id can never return another business's receipt.
+        self.by_request: dict[tuple[str, str], dict[str, Any]] = {}
+        self.fingerprints: dict[tuple[str, str], str] = {}
         self.bookings: dict[str, dict[str, Any]] = {}     # reference -> {request, receipt}
 
     @property
@@ -155,16 +159,20 @@ class RequestBook:
             return self._receipt(request.get("request_id", "unknown"), "failed",
                                  message="Invalid request: " + "; ".join(f"{i.path}: {i.message}" for i in issues[:3]))
         rid = request["request_id"]
-        if rid in self.by_request:  # idempotency: a retry gets the same answer
-            return self.by_request[rid]
+        key = (request["business_id"], rid)
+        fingerprint = _fingerprint(request)
+        if key in self.by_request:  # idempotency: a retry gets the same answer
+            if self.fingerprints[key] != fingerprint:
+                return self._receipt(rid, "failed", message=f"request_id '{rid}' was already used for a different request; use a new request_id")
+            return self.by_request[key]
         try:
             profile = self.directory.get(request["business_id"])
         except KeyError as exc:
-            return self._remember(rid, self._receipt(rid, "failed", message=str(exc.args[0])))
+            return self._remember(key, fingerprint, self._receipt(rid, "failed", message=str(exc.args[0])))
 
         if request["action"] in {"cancel", "check_status"}:
-            return self._remember(rid, self._existing(request, profile))
-        return self._remember(rid, self._new(request, profile))
+            return self._remember(key, fingerprint, self._existing(request, profile))
+        return self._remember(key, fingerprint, self._new(request, profile))
 
     # ------------------------------------------------------------ actions
 
@@ -199,7 +207,10 @@ class RequestBook:
                 instant = False
             sla = max(sla, cap.get("confirmation_sla_minutes", DEFAULT_SLA_MINUTES))
 
-        reference = "GTF-" + hashlib.sha256(rid.encode()).hexdigest()[:8].upper()
+        # Random, not derived from request_id: whoever holds a reference can cancel the booking
+        reference = "GTF-" + secrets.token_hex(4).upper()
+        while reference in self.bookings:
+            reference = "GTF-" + secrets.token_hex(4).upper()
         total = self._total(request, profile)
         name = profile["business"]["name"]
         if instant:
@@ -244,8 +255,14 @@ class RequestBook:
             raise ValueError(f"no pending request with reference '{reference}'")
         profile = self.directory.get(booking["business_id"])
         original = booking["receipt"]
-        if accept:
-            slots = {r["slot_id"]: r for r in profile["availability"] if r["type"] == "slot"}
+        slots = {r["slot_id"]: r for r in profile["availability"] if r["type"] == "slot"}
+        short = self._shortfall(booking["request"], slots) if accept else None
+        if short:
+            # Places went to someone else while this request was pending: never overbook
+            receipt = self._receipt(original["request_id"], "declined", reference=reference,
+                                    decline_reason="unavailable", message=short,
+                                    alternatives=self._alternatives(booking["request"], profile))
+        elif accept:
             self._take_places(booking["request"], slots)
             receipt = self._receipt(original["request_id"], "confirmed", reference=reference,
                                     total=original.get("total"), message=message or "Confirmed by the business.")
@@ -253,10 +270,20 @@ class RequestBook:
             receipt = self._receipt(original["request_id"], "declined", reference=reference,
                                     decline_reason="unavailable", message=message or "Declined by the business.")
         booking["receipt"] = receipt
-        self.by_request[original["request_id"]] = receipt
+        self.by_request[(booking["business_id"], original["request_id"])] = receipt
         return receipt
 
     # ------------------------------------------------------------ helpers
+
+    def _shortfall(self, request: dict[str, Any], slots: dict[str, Any]) -> str | None:
+        """Why the request no longer fits its slots, or None when it does."""
+        party = int(request.get("customer", {}).get("party_size") or 0)
+        for item in request["items"]:
+            slot = slots.get(item.get("slot_id"))
+            n = party or int(item.get("quantity") or 1)
+            if slot is not None and slot["remaining"] < n:
+                return f"Only {slot['remaining']} place(s) left at {slot['start']}; {n} asked for."
+        return None
 
     def _take_places(self, request: dict[str, Any], slots: dict[str, Any], release: bool = False) -> None:
         party = int(request.get("customer", {}).get("party_size") or 0)
@@ -296,6 +323,13 @@ class RequestBook:
         receipt["issued_at"] = _iso(self.now)
         return receipt
 
-    def _remember(self, request_id: str, receipt: dict[str, Any]) -> dict[str, Any]:
-        self.by_request[request_id] = receipt
+    def _remember(self, key: tuple[str, str], fingerprint: str, receipt: dict[str, Any]) -> dict[str, Any]:
+        self.by_request[key] = receipt
+        self.fingerprints[key] = fingerprint
         return receipt
+
+
+def _fingerprint(request: dict[str, Any]) -> str:
+    """What a request asks for, ignoring when it was sent, so a retry matches the original."""
+    body = {k: v for k, v in request.items() if k != "created_at"}
+    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()

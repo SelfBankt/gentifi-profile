@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gentifi.org/schema/v0.1/profile.schema.json",
+  "$id": "https://gentifi.com/standards/profile-0.1.schema.json",
   "title": "Gentifi Business Profile",
   "description": "Draft v0.1. The source of truth for what a small business offers, what is available right now, and what actions an AI agent can take on its behalf. Protocol-neutral: the same profile can be served over MCP, embedded in a web page as structured data, or exposed through agent-to-agent and agent-commerce protocols. Field names follow schema.org where a close equivalent exists.",
   "type": "object",
@@ -518,7 +518,7 @@
     },
 
     "Extensions": {
-      "description": "Namespaced vertical-specific fields, e.g. {\"org.gentifi.farm\": {...}}. Keys must be reverse-domain names so extensions from different parties don't collide.",
+      "description": "Namespaced vertical-specific fields, e.g. {\"com.gentifi.farm\": {...}}. Keys must be reverse-domain names so extensions from different parties don't collide.",
       "type": "object",
       "propertyNames": { "pattern": "^[a-z0-9]+(\\.[a-z0-9\\-]+)+$" }
     }

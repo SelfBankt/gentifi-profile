@@ -12,7 +12,7 @@ from gentifi_profile.store import Directory  # noqa: E402
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 FARM = "gtf_hollowbrookfarm"
-PLUMBER = "gtf_kingswoodplumbing"
+PLUMBER = "gtf_brooksideplumbing"
 PUCKLECHURCH = {"near_lat": 51.486, "near_lng": -2.44}
 
 
