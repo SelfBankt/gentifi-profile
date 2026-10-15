@@ -1,0 +1,83 @@
+{
+  "spec_version": "0.1",
+  "business": {
+    "id": "gtf_kingswoodplumbing",
+    "name": "Kingswood Plumbing & Heating",
+    "description": "Sole-trader plumber. Boiler servicing, leaks, bathroom fitting. Gas Safe registered.",
+    "categories": ["Plumber"],
+    "tags": ["trades", "gas_safe"],
+    "location": {
+      "service_area": { "type": "radius", "centre": { "lat": 51.46, "lng": -2.505 }, "radius_km": 12 },
+      "premises_open_to_public": false
+    },
+    "time_zone": "Europe/London",
+    "opening_hours": [
+      { "days": ["mon", "tue", "wed", "thu", "fri"], "opens": "08:00", "closes": "18:00" }
+    ],
+    "contact": { "phone": "+44 1179 000001" },
+    "languages": ["en-GB"],
+    "verification": { "status": "claimed", "methods": ["phone"] },
+    "identifiers": { "gas_safe": "000000" }
+  },
+  "offerings": [
+    {
+      "id": "boiler_service",
+      "kind": "bookable_service",
+      "name": "Annual boiler service",
+      "price": { "type": "fixed", "amount": { "amount_minor": 8500, "currency": "GBP" }, "per": "visit" },
+      "duration_minutes": 60,
+      "fulfilment": ["at_customer_location"],
+      "attributes": { "gas_safe_certificate_included": true }
+    },
+    {
+      "id": "callout",
+      "kind": "service",
+      "name": "Leak or breakdown call-out",
+      "description": "First hour included; parts and further time quoted on site.",
+      "price": { "type": "from", "amount": { "amount_minor": 6500, "currency": "GBP" }, "per": "visit" },
+      "fulfilment": ["at_customer_location"]
+    },
+    {
+      "id": "bathroom_fit",
+      "kind": "service",
+      "name": "Bathroom fitting",
+      "price": { "type": "quote" },
+      "fulfilment": ["at_customer_location"]
+    }
+  ],
+  "availability": [
+    {
+      "type": "slot",
+      "slot_id": "svc_20261020_0900",
+      "offering_id": "boiler_service",
+      "start": "2026-10-20T09:00:00+01:00",
+      "end": "2026-10-20T10:00:00+01:00",
+      "capacity": 1,
+      "remaining": 1,
+      "freshness": { "observed_at": "2026-10-15T18:00:00+01:00", "valid_until": "2026-10-16T18:00:00+01:00", "confidence": "likely", "source": "owner" }
+    },
+    {
+      "type": "pattern",
+      "offering_id": "callout",
+      "days": ["mon", "tue", "wed", "thu", "fri"],
+      "from_time": "08:00",
+      "to_time": "18:00",
+      "note": "Usually same or next working day.",
+      "freshness": { "observed_at": "2026-10-01T09:00:00+01:00", "confidence": "typical", "source": "owner" }
+    }
+  ],
+  "policies": {
+    "min_lead_time_minutes": 240,
+    "max_advance_days": 60,
+    "cancellation": { "free_until_minutes_before": 1440, "late_fee": { "amount_minor": 3000, "currency": "GBP" } },
+    "deposit": { "required": false },
+    "payment_methods": ["bank_transfer", "card_in_person"]
+  },
+  "actions": [
+    { "action": "book", "mode": "request_to_confirm", "applies_to": ["boiler_service", "callout"], "confirmation_sla_minutes": 60, "required_customer_fields": ["name", "contact", "address"] },
+    { "action": "enquire", "mode": "request_to_confirm", "applies_to": ["bathroom_fit"], "confirmation_sla_minutes": 1440, "required_customer_fields": ["name", "contact", "notes"] },
+    { "action": "cancel", "mode": "instant" },
+    { "action": "check_status", "mode": "instant" }
+  ],
+  "updated_at": "2026-10-15T18:00:00+01:00"
+}

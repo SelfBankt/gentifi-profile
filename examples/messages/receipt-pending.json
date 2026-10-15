@@ -1,0 +1,9 @@
+{
+  "request_id": "req_7f3c9a12e4",
+  "status": "pending_confirmation",
+  "confirm_by": "2026-10-15T21:40:00+01:00",
+  "total": { "amount_minor": 2500, "currency": "GBP" },
+  "payment": { "status": "due_on_fulfilment" },
+  "message": "Sent to Hollowbrook Farm Shop. They'll confirm within 2 hours.",
+  "issued_at": "2026-10-15T19:40:01+01:00"
+}

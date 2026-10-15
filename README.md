@@ -1,0 +1,157 @@
+# Gentifi Business Profile
+
+**Draft v0.1 — open for feedback.**
+
+An open, protocol-neutral format that describes what a local business offers,
+what is available right now, and what an AI agent may do on its behalf.
+
+The goal is simple: when someone asks their assistant to *"get two dozen eggs from
+a farm near me for Saturday"* or *"book a boiler service next week"*, the agent can
+find a real local business, see what's actually available, and make the booking
+or order reliably — without that business needing its own app, platform account or
+developer.
+
+## What makes it different: freshness
+
+Most catalogue formats say what is available. This one also says **how sure you can
+be**. Every availability record carries:
+
+| Field | Meaning |
+| --- | --- |
+| `observed_at` | when this was last known to be true |
+| `valid_until` | after this, treat it as stale (optional) |
+| `confidence` | `confirmed`, `likely`, `typical` (a recurring pattern, not a promise) or `unknown` |
+| `source` | `owner`, `integration` (synced booking/till system), `message_parse` (read from a WhatsApp/SMS/photo), `pattern` or `agent_report` |
+
+From that, an agent can decide whether to **book straight away**, **ask the business
+to confirm first**, or **warn the user** that the information may be out of date.
+Small businesses rarely have live inventory systems; this lets them take part
+honestly anyway.
+
+## The shape of a profile
+
+```
+profile
+├── business       identity, location or service area, hours, verification
+├── offerings      products, bookable services, rentals, events, quoted work
+├── availability   stock | slot | pattern — each with freshness
+├── policies       notice, cancellation, deposit, delivery, payment
+└── actions        hold, book, order, cancel, check_status, enquire
+                   each "instant" or "request_to_confirm" (with a response time)
+```
+
+At run time an agent sends an **ActionRequest** and gets a **Receipt** back
+(`confirmed`, `held`, `pending_confirmation`, `declined` with a reason and
+alternatives, `cancelled`, `expired` or `failed`). Requests carry an idempotency
+key, so a retried request can never create a second booking, and can use a contact
+relay token instead of the customer's raw phone number or email.
+
+A trimmed example:
+
+```json
+{
+  "type": "slot",
+  "slot_id": "tour_20261017_1000",
+  "offering_id": "farm_tour",
+  "start": "2026-10-17T10:00:00+01:00",
+  "end": "2026-10-17T11:00:00+01:00",
+  "remaining": 4,
+  "freshness": {
+    "observed_at": "2026-10-15T19:30:00+01:00",
+    "confidence": "confirmed",
+    "source": "integration"
+  }
+}
+```
+
+Full examples: [`examples/farm-shop.json`](examples/farm-shop.json) (stock,
+slots, patterns, quoted items) and [`examples/plumber.json`](examples/plumber.json)
+(a mobile tradesperson with a service area). Request and receipt examples are in
+[`examples/messages/`](examples/messages/).
+
+Design choices worth knowing:
+
+- Money is in minor units (`amount_minor: 350` = £3.50) to avoid rounding errors.
+- Field names follow [schema.org](https://schema.org) where a close equivalent exists.
+- Vertical-specific fields go in `extensions` under reverse-domain keys
+  (e.g. `org.gentifi.farm`), so the core stays small.
+- The format is protocol-neutral. The same profile can be served over MCP,
+  published as structured data on a website, or carried by agent-to-agent and
+  agent-commerce protocols.
+
+## What's in this repository
+
+| Path | What it is |
+| --- | --- |
+| [`schema/v0.1/profile.schema.json`](schema/v0.1/profile.schema.json) | the specification, as JSON Schema 2020-12 |
+| `examples/` | valid example profiles and messages |
+| `src/gentifi_profile/` | Python validator and reference MCP server |
+| `tests/` | tests for both |
+
+## Validate a profile
+
+```bash
+pip install -e .                      # from a clone of this repo
+gentifi-validate examples/farm-shop.json
+gentifi-validate my-request.json --profile examples/farm-shop.json
+```
+
+Beyond the schema, the validator checks things a schema can't: that every id it
+references exists, that slots end after they start and don't exceed capacity,
+that quoted items can be enquired about, and that availability isn't stale.
+Use `--strict` to fail on warnings, `--json` for machine-readable output and
+`--now` to evaluate freshness at a fixed time.
+
+## Run the reference MCP server
+
+```bash
+pip install -e ".[server]"
+gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
+```
+
+It serves every profile in a folder to any MCP-capable agent, with five tools:
+`find_businesses`, `get_business_info`, `search_catalogue`, `check_availability`
+(each record annotated with `book_instantly`, `request_confirmation`, `warn_user`
+or `not_available`) and `submit_request`. `--demo` adds `respond_as_owner` so you
+can play the business and confirm or decline pending requests. `--now` freezes the
+clock so the example data stays fresh.
+
+To use it with Claude Desktop, add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "gentifi": {
+      "command": "gentifi-mcp",
+      "args": ["--profiles", "/path/to/profiles", "--demo", "--now", "2026-10-15T20:00:00+01:00"]
+    }
+  }
+}
+```
+
+Use `--transport streamable-http` to serve it over HTTP instead.
+
+**This is a reference implementation, not a production service.** It keeps
+bookings in memory, doesn't contact businesses, and doesn't take payment or adjust
+stock levels on orders. Its job is to show the intended behaviour and let you test
+the format with real agents.
+
+## Status and roadmap
+
+v0.1 is a draft. It will change based on what breaks when real agents and real
+businesses use it. Things we expect to look at next:
+
+- how agents report back outcomes (`agent_report`) to keep data fresh
+- payment hand-off (checkout links, deposits)
+- mappings to schema.org JSON-LD and to emerging agent-commerce protocols
+- a shared registry for discovery and verification
+
+## Contributing
+
+Feedback is the most useful contribution at this stage. Please open an issue,
+especially if you've tried describing a real business and something didn't fit.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Licence
+
+[Apache 2.0](LICENSE) — the specification, examples and code.

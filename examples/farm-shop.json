@@ -1,0 +1,297 @@
+{
+  "spec_version": "0.1",
+  "business": {
+    "id": "gtf_hollowbrookfarm",
+    "name": "Hollowbrook Farm Shop",
+    "description": "Family farm selling free-range eggs, seasonal veg and lamb. Farm tours for small groups.",
+    "categories": [
+      "Store"
+    ],
+    "tags": [
+      "farm_shop",
+      "local_produce"
+    ],
+    "location": {
+      "address": {
+        "line1": "Hollowbrook Lane",
+        "locality": "Pucklechurch",
+        "region": "South Gloucestershire",
+        "postal_code": "BS16 9XX",
+        "country": "GB"
+      },
+      "geo": {
+        "lat": 51.487,
+        "lng": -2.437
+      },
+      "premises_open_to_public": true
+    },
+    "time_zone": "Europe/London",
+    "opening_hours": [
+      {
+        "days": [
+          "thu",
+          "fri"
+        ],
+        "opens": "10:00",
+        "closes": "17:00"
+      },
+      {
+        "days": [
+          "sat"
+        ],
+        "opens": "09:00",
+        "closes": "13:00"
+      }
+    ],
+    "contact": {
+      "phone": "+44 1179 000000",
+      "website": "https://example.org"
+    },
+    "languages": [
+      "en-GB"
+    ],
+    "verification": {
+      "status": "verified",
+      "methods": [
+        "phone",
+        "postcard"
+      ],
+      "verified_at": "2026-10-01T10:00:00Z",
+      "verified_by": "gentifi.org"
+    }
+  },
+  "offerings": [
+    {
+      "id": "eggs",
+      "kind": "product",
+      "name": "Free-range eggs",
+      "price": {
+        "type": "fixed",
+        "amount": {
+          "amount_minor": 350,
+          "currency": "GBP"
+        },
+        "per": "dozen"
+      },
+      "variants": [
+        {
+          "id": "eggs_6",
+          "name": "Half dozen",
+          "price": {
+            "type": "fixed",
+            "amount": {
+              "amount_minor": 200,
+              "currency": "GBP"
+            },
+            "per": "6"
+          }
+        },
+        {
+          "id": "eggs_12",
+          "name": "Dozen"
+        }
+      ],
+      "fulfilment": [
+        "collection",
+        "delivery"
+      ],
+      "attributes": {
+        "free_range": true
+      }
+    },
+    {
+      "id": "veg_box",
+      "kind": "product",
+      "name": "Seasonal veg box",
+      "price": {
+        "type": "fixed",
+        "amount": {
+          "amount_minor": 1800,
+          "currency": "GBP"
+        },
+        "per": "each"
+      },
+      "fulfilment": [
+        "collection",
+        "delivery"
+      ],
+      "lead_time_minutes": 1440,
+      "attributes": {
+        "vegetarian": true
+      }
+    },
+    {
+      "id": "lamb_half",
+      "kind": "product",
+      "name": "Half lamb, butchered",
+      "price": {
+        "type": "quote"
+      },
+      "fulfilment": [
+        "collection"
+      ],
+      "seasonal": {
+        "months": [
+          9,
+          10,
+          11
+        ]
+      }
+    },
+    {
+      "id": "farm_tour",
+      "kind": "bookable_service",
+      "name": "Farm tour (up to 6 people)",
+      "price": {
+        "type": "fixed",
+        "amount": {
+          "amount_minor": 800,
+          "currency": "GBP"
+        },
+        "per": "person"
+      },
+      "duration_minutes": 60,
+      "fulfilment": [
+        "on_premises"
+      ]
+    }
+  ],
+  "availability": [
+    {
+      "type": "stock",
+      "offering_id": "eggs",
+      "variant_id": "eggs_12",
+      "status": "in_stock",
+      "quantity": 14,
+      "quantity_unit": "dozen",
+      "freshness": {
+        "observed_at": "2026-10-15T08:10:00+01:00",
+        "valid_until": "2026-10-16T17:00:00+01:00",
+        "confidence": "confirmed",
+        "source": "message_parse",
+        "source_ref": "whatsapp:msg_8812"
+      }
+    },
+    {
+      "type": "stock",
+      "offering_id": "lamb_half",
+      "status": "low",
+      "quantity": 2,
+      "freshness": {
+        "observed_at": "2026-10-15T12:00:00+01:00",
+        "confidence": "likely",
+        "source": "owner"
+      }
+    },
+    {
+      "type": "pattern",
+      "offering_id": "veg_box",
+      "days": [
+        "fri",
+        "sat"
+      ],
+      "note": "Boxes packed Friday morning; order by Thursday noon.",
+      "freshness": {
+        "observed_at": "2026-09-20T12:00:00+01:00",
+        "confidence": "typical",
+        "source": "pattern"
+      }
+    },
+    {
+      "type": "slot",
+      "slot_id": "tour_20261017_1000",
+      "offering_id": "farm_tour",
+      "start": "2026-10-17T10:00:00+01:00",
+      "end": "2026-10-17T11:00:00+01:00",
+      "capacity": 6,
+      "remaining": 4,
+      "freshness": {
+        "observed_at": "2026-10-15T19:30:00+01:00",
+        "confidence": "confirmed",
+        "source": "integration",
+        "source_ref": "calendly"
+      }
+    }
+  ],
+  "policies": {
+    "min_lead_time_minutes": 120,
+    "max_advance_days": 30,
+    "cancellation": {
+      "free_until_minutes_before": 1440,
+      "note": "Tours: please give 24h notice."
+    },
+    "deposit": {
+      "required": false
+    },
+    "delivery": {
+      "area": {
+        "type": "postcodes",
+        "postcode_prefixes": [
+          "BS16",
+          "BS30",
+          "BS37"
+        ]
+      },
+      "fee": {
+        "amount_minor": 300,
+        "currency": "GBP"
+      },
+      "free_over": {
+        "amount_minor": 3000,
+        "currency": "GBP"
+      },
+      "days": [
+        "fri"
+      ]
+    },
+    "payment_methods": [
+      "card_in_person",
+      "cash",
+      "card_online"
+    ]
+  },
+  "actions": [
+    {
+      "action": "book",
+      "mode": "instant",
+      "applies_to": [
+        "farm_tour"
+      ],
+      "required_customer_fields": [
+        "name",
+        "contact",
+        "party_size"
+      ]
+    },
+    {
+      "action": "order",
+      "mode": "request_to_confirm",
+      "applies_to": [
+        "eggs",
+        "veg_box"
+      ],
+      "confirmation_sla_minutes": 120,
+      "required_customer_fields": [
+        "name",
+        "contact"
+      ]
+    },
+    {
+      "action": "enquire",
+      "mode": "request_to_confirm",
+      "applies_to": [
+        "lamb_half"
+      ],
+      "confirmation_sla_minutes": 1440
+    },
+    {
+      "action": "cancel",
+      "mode": "instant"
+    },
+    {
+      "action": "check_status",
+      "mode": "instant"
+    }
+  ],
+  "updated_at": "2026-10-15T19:30:00+01:00"
+}

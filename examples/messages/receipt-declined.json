@@ -1,0 +1,19 @@
+{
+  "request_id": "req_91ab33c0d2",
+  "status": "declined",
+  "decline_reason": "unavailable",
+  "message": "The 10:00 tour is full. 14:00 the same day has space.",
+  "alternatives": [
+    {
+      "type": "slot",
+      "slot_id": "tour_20261017_1400",
+      "offering_id": "farm_tour",
+      "start": "2026-10-17T14:00:00+01:00",
+      "end": "2026-10-17T15:00:00+01:00",
+      "capacity": 6,
+      "remaining": 6,
+      "freshness": { "observed_at": "2026-10-15T19:45:00+01:00", "confidence": "confirmed", "source": "integration" }
+    }
+  ],
+  "issued_at": "2026-10-15T19:45:02+01:00"
+}
