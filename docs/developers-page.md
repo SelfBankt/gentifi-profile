@@ -1,73 +1,36 @@
 <!--
-Copy for the Developers page on the Gentifi website.
-About 350 words; the repo README holds the detail.
+Copy for the Gentifi Business Profile section on gentifi.com/standards.
+The repo README holds the detail.
 -->
 
-# Gentifi for developers
+## Gentifi Business Profile (draft 0.1)
 
-## An open format for businesses that AI agents can rely on
+An open format that describes what a local business offers, what's available right
+now, and what an AI agent may do on its behalf: hold, book, order, cancel, check
+status or enquire. It's designed for businesses without live inventory systems: the
+farm shop, the plumber, the independent café.
 
-**Gentifi Business Profile** is an open, protocol-neutral format that describes what
-a local business offers, what's available right now, and what an AI agent can do on
-its behalf: hold, book, order, cancel, check status or enquire.
+**Every piece of availability says how sure you can be.** Each stock level,
+bookable slot or recurring pattern carries when it was last confirmed, how confident
+that is, and where it came from: the owner, a synced booking or till system, or a
+message the owner sent. An agent can then tell whether a booking can be confirmed
+straight away, whether the business needs to confirm it first, or whether to warn
+the customer that the information may be out of date.
 
-It's built for the businesses platforms tend to miss: the farm shop, the plumber,
-the independent café. They rarely have live inventory systems, so the format is
-designed around that.
+**The customer always confirms.** Every hold, booking or order carries how and when
+the customer agreed to it, in their AI app or on a confirmation page. Requests come
+back with a clear receipt: confirmed, pending (with a time the business will reply
+by), or declined with a reason and alternatives. Retries are safe.
 
-**Draft v0.1 — open for feedback.** Apache 2.0 licensed.
+**Use it with any agent.** The same profile can be served over MCP, published as
+structured data on a website, or carried by other agent protocols. The repository
+has the JSON Schema with worked examples (a farm shop and a mobile plumber, both
+fictional), a validator that checks ids, slots and stale data as well as structure,
+and a reference MCP server for trying it out. The reference server isn't the live
+Gentifi service: that runs on the Gentifi toolkit, which will publish profiles in
+this format.
 
-## Every piece of availability says how sure you can be
-
-Each stock level, bookable slot or recurring pattern carries when it was last
-confirmed, how confident that is, and where it came from: the owner, a synced
-booking system, or a WhatsApp message read by AI. Agents can then decide whether to:
-
-- **book straight away** — confirmed and current
-- **ask the business to confirm first** — with a stated response time
-- **warn the user** — the information may be out of date
-
-```json
-{
-  "type": "slot",
-  "offering_id": "farm_tour",
-  "start": "2026-10-17T10:00:00+01:00",
-  "remaining": 4,
-  "freshness": {
-    "observed_at": "2026-10-15T19:30:00+01:00",
-    "confidence": "confirmed",
-    "source": "integration"
-  }
-}
-```
-
-Bookings and orders return a clear receipt — confirmed, pending (with a time the
-business will reply by), or declined with a reason and alternatives. Retries are
-safe: every request carries an idempotency key.
-
-## Use it with any agent
-
-The same profile can be served over MCP, published as structured data on a
-website, or carried by other agent protocols. The repository includes:
-
-- **The schema** (JSON Schema 2020-12) with worked examples
-- **A validator** that checks ids, slots, policies and stale data, not just structure
-- **A reference MCP server** you can point Claude, ChatGPT or any MCP client at
-
-```bash
-git clone https://github.com/SelfBankt/gentifi-profile && cd gentifi-profile
-pip install -e ".[server]"
-gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
-# --now freezes the clock so the example data stays fresh
-```
-
-[View on GitHub →](https://github.com/SelfBankt/gentifi-profile)
-
-## Help shape it
-
-This is a draft, and it will change based on what breaks in real use. If you've
-tried to describe a real business and something didn't fit, or an agent got
-confused, please [open an issue](https://github.com/SelfBankt/gentifi-profile/issues).
-
-Running a business rather than building agents? Gentifi can set up and keep your
-profile current for you — [Gentifi your business →](/)
+Draft 0.1, Apache 2.0. Schema: `https://gentifi.com/standards/profile-0.1.schema.json`.
+Repository: [github.com/SelfBankt/gentifi-profile](https://github.com/SelfBankt/gentifi-profile).
+If you've tried describing a real business and something didn't fit, please
+[open an issue](https://github.com/SelfBankt/gentifi-profile/issues).

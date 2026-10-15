@@ -3,12 +3,30 @@
   "business_id": "gtf_hollowbrookfarm",
   "action": "order",
   "items": [
-    { "offering_id": "eggs", "variant_id": "eggs_12", "quantity": 2 },
-    { "offering_id": "veg_box", "quantity": 1 }
+    {
+      "offering_id": "eggs",
+      "variant_id": "eggs_12",
+      "quantity": 2
+    },
+    {
+      "offering_id": "veg_box",
+      "quantity": 1
+    }
   ],
+  "customer_confirmation": {
+    "method": "in_app",
+    "confirmed_at": "2026-10-15T19:39:30+01:00"
+  },
   "fulfilment": "collection",
-  "customer": { "name": "Sam", "contact_relay_token": "rly_2b8e01" },
+  "customer": {
+    "name": "Sam",
+    "contact_relay_token": "rly_2b8e01"
+  },
   "notes": "Collecting Saturday morning.",
-  "agent": { "name": "Claude", "platform": "claude.ai", "on_behalf_of_verified_user": true },
+  "agent": {
+    "name": "Claude",
+    "platform": "claude.ai",
+    "on_behalf_of_verified_user": true
+  },
   "created_at": "2026-10-15T19:40:00+01:00"
 }

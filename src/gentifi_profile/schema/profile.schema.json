@@ -425,6 +425,22 @@
         "business_id": { "type": "string", "pattern": "^gtf_[a-z0-9]{8,32}$" },
         "action": { "type": "string", "enum": ["hold", "book", "order", "cancel", "check_status", "enquire"] },
         "reference": { "type": "string", "description": "Existing booking reference, for cancel and check_status." },
+        "customer_confirmation": {
+          "description": "Evidence that the customer agreed to exactly this request (items, time, price) before it was sent. Required for hold, book and order: an agent never commits a customer on its own.",
+          "type": "object",
+          "required": ["method", "confirmed_at"],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": ["confirmation_page", "in_app"],
+              "description": "confirmation_page: the customer tapped Confirm on a page that showed this order (give its reference). in_app: the customer approved it in their AI app, in a confirmation dialog or by an explicit yes to a summary of this request."
+            },
+            "confirmed_at": { "type": "string", "format": "date-time" },
+            "reference": { "type": "string", "description": "The confirmation page's reference, such as a Gentifi order reference." }
+          },
+          "allOf": [{ "if": { "properties": { "method": { "const": "confirmation_page" } } }, "then": { "required": ["reference"] } }],
+          "additionalProperties": false
+        },
         "items": {
           "type": "array",
           "items": {
@@ -468,7 +484,7 @@
         "created_at": { "type": "string", "format": "date-time" }
       },
       "allOf": [
-        { "if": { "properties": { "action": { "enum": ["hold", "book", "order"] } } }, "then": { "required": ["items"] } },
+        { "if": { "properties": { "action": { "enum": ["hold", "book", "order"] } } }, "then": { "required": ["items", "customer_confirmation"] } },
         { "if": { "properties": { "action": { "enum": ["cancel", "check_status"] } } }, "then": { "required": ["reference"] } }
       ],
       "additionalProperties": false

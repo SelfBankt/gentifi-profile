@@ -51,6 +51,7 @@ def tour_request(rid, party, created="2026-10-15T20:00:00+01:00"):
         "request_id": rid, "business_id": FARM, "action": "book",
         "items": [{"offering_id": "farm_tour", "slot_id": "tour_20261017_1000"}],
         "customer": {"name": "Sam", "contact_relay_token": "rly_1", "party_size": party},
+        "customer_confirmation": {"method": "in_app", "confirmed_at": "2026-10-15T19:59:00+01:00"},
         "agent": {"name": "Claude"}, "created_at": created,
     }
 
@@ -140,6 +141,7 @@ async def test_bad_requests_fail_clearly(server):
         no_address = {"request_id": "req_plumb_001", "business_id": PLUMBER, "action": "book",
                       "items": [{"offering_id": "boiler_service", "slot_id": "svc_20261020_0900"}],
                       "customer": {"name": "Sam", "phone": "+44 7700 900000"},
+                      "customer_confirmation": {"method": "in_app", "confirmed_at": "2026-10-15T19:59:00+01:00"},
                       "agent": {"name": "Claude"}, "created_at": "2026-10-15T20:00:00+01:00"}
         receipt = await call(c, "submit_request", request=no_address)
         assert receipt["status"] == "failed" and "'address' is required" in receipt["message"]

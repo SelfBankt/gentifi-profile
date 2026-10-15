@@ -177,6 +177,10 @@ def request_issues(request: dict[str, Any], profile: dict[str, Any]) -> list[Iss
     slots = {r["slot_id"]: r for r in profile["availability"] if r["type"] == "slot"}
     customer = request.get("customer", {})
 
+    agreed = request.get("customer_confirmation")
+    if agreed and parse_time(agreed["confirmed_at"]) > parse_time(request["created_at"]):
+        err("$.customer_confirmation.confirmed_at", "the customer must confirm before the request is sent")
+
     for i, item in enumerate(request.get("items", [])):
         p = f"$.items[{i}]"
         offering = offerings.get(item["offering_id"])

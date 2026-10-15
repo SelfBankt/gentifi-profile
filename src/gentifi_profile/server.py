@@ -37,6 +37,9 @@ Every availability record has an 'assessment.advice':
   not_available        - full, sold out, out of season or already started
 Always tell the user when availability was last confirmed (age_minutes), and
 never tell them something is booked unless the receipt status is 'confirmed' or 'held'.
+Never send hold, book or order on your own: show the customer exactly what will be
+requested (items, time, price) and send it only after they agree, recording that in
+customer_confirmation.
 Give each request a unique request_id; retrying with the same id is safe and
 returns the original receipt.
 """
@@ -77,9 +80,11 @@ def build_server(directory: Directory, demo: bool = False) -> MCPServer:
     @server.tool()
     def submit_request(request: dict[str, Any]) -> dict[str, Any]:
         """Send an ActionRequest (hold, book, order, cancel, check_status or enquire) and get a
-        Receipt back. Required: request_id (unique, used for safe retries), business_id, action,
-        agent {name}, created_at (ISO 8601); items for hold/book/order/enquire; reference for
-        cancel/check_status. Booking a slot needs items[].slot_id (from check_availability) and
+        Receipt back. Only send hold, book or order after the customer has agreed to exactly this
+        request, and say how in customer_confirmation {method: in_app or confirmation_page,
+        confirmed_at, reference for a confirmation page}. Required: request_id (unique, used for
+        safe retries), business_id, action, agent {name}, created_at (ISO 8601); items for
+        hold/book/order/enquire; reference for cancel/check_status. Booking a slot needs items[].slot_id (from check_availability) and
         customer.party_size where relevant. Check get_business_info for required customer fields."""
         return book.submit(request)
 

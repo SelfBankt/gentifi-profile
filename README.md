@@ -23,8 +23,9 @@ be**. Every availability record carries:
 | `confidence` | `confirmed`, `likely`, `typical` (a recurring pattern, not a promise) or `unknown` |
 | `source` | `owner`, `integration` (synced booking/till system), `message_parse` (read from a WhatsApp/SMS/photo), `pattern` or `agent_report` |
 
-From that, an agent can decide whether to **book straight away**, **ask the business
-to confirm first**, or **warn the user** that the information may be out of date.
+From that, an agent can decide whether the booking can be **confirmed straight away**
+once the customer agrees, whether to **ask the business to confirm first**, or whether
+to **warn the user** that the information may be out of date.
 Small businesses rarely have live inventory systems; this lets them take part
 honestly anyway.
 
@@ -45,6 +46,12 @@ At run time an agent sends an **ActionRequest** and gets a **Receipt** back
 alternatives, `cancelled`, `expired` or `failed`). Requests carry an idempotency
 key, so a retried request can never create a second booking, and can use a contact
 relay token instead of the customer's raw phone number or email.
+
+**The customer always confirms.** A `hold`, `book` or `order` must carry
+`customer_confirmation`: how and when the customer agreed to exactly that request,
+either in their AI app (`in_app`) or by tapping Confirm on a page that showed the
+order (`confirmation_page`, with its reference). An agent never commits a customer
+on its own; requests without it are refused.
 
 A trimmed example:
 
@@ -135,6 +142,15 @@ Use `--transport streamable-http` to serve it over HTTP instead.
 bookings in memory, doesn't contact businesses, and doesn't take payment or adjust
 stock levels on orders. Its job is to show the intended behaviour and let you test
 the format with real agents.
+
+## How this relates to the Gentifi toolkit
+
+The live Gentifi service runs on the [Gentifi toolkit](https://github.com/SelfBankt/gentifi-toolkit),
+which turns a business's spreadsheet or till export into a hosted connector at
+`https://mcp.gentifi.com/mcp`. This profile is a draft of the richer format that
+service is heading towards: freshness on every piece of availability, bookable
+slots, and actions with receipts. The plan is for the toolkit to publish each
+business as a profile; until then, the two are separate.
 
 ## Status and roadmap
 
