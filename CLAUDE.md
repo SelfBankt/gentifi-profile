@@ -18,19 +18,33 @@ it was observed, how confident that is (`confirmed` / `likely` / `typical` /
 `unknown`) and where it came from. Agents use this to decide whether to book
 instantly, ask the owner to confirm, or warn the user. Protect this in any change.
 
+**The customer always confirms.** `hold`, `book` and `order` requests must carry
+`customer_confirmation` (`in_app`, or `confirmation_page` with its reference, and
+when). An agent never commits a customer on its own. Keep this in any change.
+
+The live Gentifi service runs on the separate
+[Gentifi toolkit](https://github.com/SelfBankt/gentifi-toolkit) (hosted connector at
+`https://mcp.gentifi.com/mcp`). This profile is the richer format that service is
+heading towards; the plan is for the toolkit to publish each business as a profile.
+
 ## Layout
 
 - `schema/v0.1/profile.schema.json` — the published spec (JSON Schema 2020-12).
   `src/gentifi_profile/schema/profile.schema.json` must stay identical (a test checks).
-- `examples/` — valid profiles (farm shop, plumber) and `messages/` (request, receipts).
+- `examples/` — valid profiles (fictional farm shop and plumber, with Ofcom drama-range
+  phone numbers) and `messages/` (request, receipts).
 - `src/gentifi_profile/`
   - `freshness.py` — turns freshness metadata into agent advice
   - `checks.py` — schema validation plus cross-reference, request and staleness rules
   - `cli.py` — `gentifi-validate`
-  - `store.py` — in-memory directory and request handling (receipts, idempotency,
-    holds, cancellation, owner responses)
+  - `store.py` — in-memory directory and request handling (receipts, per-business
+    idempotency, random references, holds, cancellation, owner responses that
+    never overbook)
   - `server.py` — reference MCP server `gentifi-mcp` (MCP Python SDK 2.x, `MCPServer`)
-- `docs/developers-page.md` — copy for the Gentifi website's developers page.
+- `tests/` — `test_profile.py` (spec and validator), `test_requests.py` (request
+  edge cases), `test_server.py` (end to end over MCP).
+- `docs/developers-page.md` — copy for the Gentifi Business Profile section on
+  gentifi.com/standards.
 
 ## Commands
 
@@ -48,16 +62,16 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
 - Money in minor units (`amount_minor`); ISO 8601 times with offsets; IANA time zones.
 - schema.org names where a close equivalent exists.
 - Keep the core small; vertical-specific fields go in `extensions` under
-  reverse-domain keys.
+  reverse-domain keys (Gentifi's own: `com.gentifi.*`).
 - Every schema change needs an updated example and a test.
 - The reference server is not production: in-memory, no payments, no stock
   decrement on orders. Keep it labelled that way.
 
-## Before publishing (open decisions)
+## Publishing
 
-- Domain in the schema `$id` (currently `gentifi.org`, a placeholder).
-- GitHub URL (`REPO_URL` placeholders in `docs/developers-page.md`).
-- Licence (currently Apache 2.0 for spec, examples and code).
+- Schema `$id`: `https://gentifi.com/standards/profile-0.1.schema.json`.
+- Repository: github.com/SelfBankt/gentifi-profile (private for now).
+- Licence: Apache 2.0 for spec, examples and code (still to confirm before going public).
 
 ## Roadmap
 
