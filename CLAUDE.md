@@ -84,6 +84,11 @@ Priority is keeping data true; the server and spec are the smaller share of effo
    - SumUp: public API mainly covers transactions; use them as an "open and selling"
      signal. Integration and referral partner routes exist.
    Confirm item-level stock support in each developer portal before building.
+   - Musqet (musqet.com): UK payments and ePOS for independents and market stalls,
+     with Bitcoin payments and an agentic-commerce product. Strategic partner for
+     both stock data and agent checkout (payment hand-off, Bitcoin payments). Start
+     with a direct approach; confirm its API exposes stock/product data and whether
+     it supports Lightning. Smaller merchant base, so a partner, not the main source.
 4. **One aggregate Gentifi connector** listed in the Claude, ChatGPT and Gemini
    directories, covering every business. Per-business connectors and on-site
    structured data (schema.org JSON-LD) are extras, not the main route.
