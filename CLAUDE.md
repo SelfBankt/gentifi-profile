@@ -74,12 +74,21 @@ Priority is keeping data true; the server and spec are the smaller share of effo
 2. **Automated onboarding.** Owner sends whatever they have (price-board photo, menu,
    website, forwarded WhatsApp message); AI extracts a draft profile; the validator
    checks it; the owner approves or corrects by reply. Imports from Google Business
-   Profile, Square and Calendly later (each needs its own API approval).
-3. **One aggregate Gentifi connector** listed in the Claude, ChatGPT and Gemini
+   Profile and Calendly later (each needs its own API approval).
+3. **Till and card-reader integrations** (`source: integration`). Live stock and
+   sales feed freshness with no owner effort. In order:
+   - Square: list on its self-service App Marketplace (full catalogue and stock
+     data); its referral programme is a side income.
+   - Zettle (PayPal): product library, inventory and purchase APIs with real-time
+     push events; apply early for partner approval, needed for multi-merchant apps.
+   - SumUp: public API mainly covers transactions; use them as an "open and selling"
+     signal. Integration and referral partner routes exist.
+   Confirm item-level stock support in each developer portal before building.
+4. **One aggregate Gentifi connector** listed in the Claude, ChatGPT and Gemini
    directories, covering every business. Per-business connectors and on-site
    structured data (schema.org JSON-LD) are extras, not the main route.
-4. **Verification and discovery registry**, once there are enough businesses.
-5. **Transaction fees**, once real orders flow (receipts already carry totals).
+5. **Verification and discovery registry**, once there are enough businesses.
+6. **Transaction fees**, once real orders flow (receipts already carry totals).
 
 Spec work expected for v0.2: `agent_report` outcomes feeding freshness, payment
 hand-off, schema.org and agent-commerce protocol mappings.
