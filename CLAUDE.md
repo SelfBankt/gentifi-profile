@@ -61,7 +61,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 gentifi-relay check                     # Telegram token from .env works?
 gentifi-relay invite gtf_hollowbrookfarm --lightning-address shop@wallet.com
-gentifi-mcp --profiles examples --telegram
+gentifi-mcp --profiles examples --telegram --transport streamable-http  # one copy only; see README
 gentifi-validate examples/*.json examples/messages/*.json --profile examples/farm-shop.json --strict --now 2026-10-15T20:00:00+01:00
 gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
 ```

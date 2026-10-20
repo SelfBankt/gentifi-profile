@@ -5,11 +5,13 @@ Serves every profile in a folder to any MCP-capable agent:
     gentifi-mcp --profiles examples                       # stdio (Claude Desktop, etc.)
     gentifi-mcp --profiles examples --transport streamable-http
     gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
-    gentifi-mcp --profiles profiles --telegram            # owners answer on Telegram
+    gentifi-mcp --profiles profiles --telegram --transport streamable-http
+                                                          # owners answer on Telegram
 
 --telegram runs the owner confirmation relay alongside the server: pending
 requests go to the business owner's Telegram chat with one-tap buttons (see
-gentifi-relay for linking owners). --demo adds a tool that lets you play the business owner, so pending requests
+gentifi-relay for linking owners). Run only one copy with --telegram, over HTTP, and
+connect agents to it: Claude Desktop starts stdio servers more than once. --demo adds a tool that lets you play the business owner, so pending requests
 can be confirmed or declined. --now freezes the clock, so the example data stays
 fresh while you try things.
 """
