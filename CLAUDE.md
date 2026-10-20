@@ -40,9 +40,17 @@ heading towards; the plan is for the toolkit to publish each business as a profi
   - `store.py` — in-memory directory and request handling (receipts, per-business
     idempotency, random references, holds, cancellation, owner responses that
     never overbook)
-  - `server.py` — reference MCP server `gentifi-mcp` (MCP Python SDK 2.x, `MCPServer`)
+  - `server.py` — reference MCP server `gentifi-mcp` (MCP Python SDK 2.x, `MCPServer`);
+    `--telegram` runs the owner relay in a background thread on the same RequestBook
+  - `relay/` — owner confirmation relay. `channel.py` (OwnerChannel interface +
+    MockChannel), `telegram.py` (Bot API, long polling, stdlib only), `links.py`
+    (SQLite: owner chat links, invites, prompt messages), `payments.py` (LNURL-pay
+    invoice from the merchant's own Lightning address, LUD-21 verify, BOLT 11 amount
+    check), `relay.py` (prompts, buttons, commands, expiry), `cli.py` (`gentifi-relay`)
 - `tests/` — `test_profile.py` (spec and validator), `test_requests.py` (request
-  edge cases), `test_server.py` (end to end over MCP).
+  edge cases), `test_server.py` (end to end over MCP), `test_relay.py` (relay through
+  a mock chat and fake wallet), `test_telegram.py` (adapter against a fake Bot API).
+- `docs/telegram-merchant-bot-spec.md` — design of the Telegram merchant bot.
 - `docs/developers-page.md` — copy for the Gentifi Business Profile section on
   gentifi.com/standards.
 
@@ -50,7 +58,10 @@ heading towards; the plan is for the toolkit to publish each business as a profi
 
 ```bash
 pip install -e ".[dev]"
-pytest -q
+python -m pytest -q
+gentifi-relay check                     # Telegram token from .env works?
+gentifi-relay invite gtf_hollowbrookfarm --lightning-address shop@wallet.com
+gentifi-mcp --profiles examples --telegram
 gentifi-validate examples/*.json examples/messages/*.json --profile examples/farm-shop.json --strict --now 2026-10-15T20:00:00+01:00
 gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
 ```
@@ -64,8 +75,14 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
 - Keep the core small; vertical-specific fields go in `extensions` under
   reverse-domain keys (Gentifi's own: `com.gentifi.*`).
 - Every schema change needs an updated example and a test.
-- The reference server is not production: in-memory, no payments, no stock
-  decrement on orders. Keep it labelled that way.
+- The reference server is not production: in-memory requests, no stock decrement on
+  orders. Keep it labelled that way.
+- **Gentifi never touches money.** Payment is only ever a hand-off of the business's
+  own payment request (their Lightning wallet's invoice, their payment link, or pay
+  on fulfilment) via `Receipt.payment`. Never route funds through Gentifi.
+- The relay's store listeners must stay quick (they run under the RequestBook lock);
+  the relay queues work. Owner-facing text is plain, short and button-first.
+- Secrets (bot token) come from the environment or a `.env` file, never the repo.
 
 ## Publishing
 
@@ -77,7 +94,8 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
 
 Priority is keeping data true; the server and spec are the smaller share of effort.
 
-1. **Owner confirmation relay** (build first). WhatsApp message to the owner with
+1. **Owner confirmation relay** (Telegram adapter built: `relay/`; WhatsApp to follow
+   as a second adapter). Message to the owner with
    one-tap Accept / Decline / Suggest another time, producing the receipt the agent
    waits for. Requests expire when the owner misses the deadline. Freshness nudges
    ("Still got eggs today? Yes / Sold out / Only a few"). SMS fallback. Build with a

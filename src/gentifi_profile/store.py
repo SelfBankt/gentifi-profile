@@ -15,6 +15,7 @@ import json
 import math
 import secrets
 import sys
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -41,6 +42,9 @@ class Directory:
     def __init__(self, profiles: list[dict[str, Any]] | None = None, clock: Callable[[], datetime] = utc_now):
         self.clock = clock
         self.profiles: dict[str, dict[str, Any]] = {}
+        # Businesses the owner has paused (holiday, sold out for the day): hidden from
+        # search and declining new requests until resumed.
+        self.paused: set[str] = set()
         for p in profiles or []:
             self.add(p)
 
@@ -77,6 +81,8 @@ class Directory:
         results = []
         for p in self.profiles.values():
             b = p["business"]
+            if b["id"] in self.paused:
+                continue
             if category and category.lower() not in {c.lower() for c in b["categories"] + b.get("tags", [])}:
                 continue
             text = " ".join([b["name"], b.get("description", ""), *b["categories"], *b.get("tags", []),
@@ -148,12 +154,29 @@ class RequestBook:
         self.by_request: dict[tuple[str, str], dict[str, Any]] = {}
         self.fingerprints: dict[tuple[str, str], str] = {}
         self.bookings: dict[str, dict[str, Any]] = {}     # reference -> {request, receipt}
+        # The owner relay and the MCP server may call in from different threads.
+        self.lock = threading.RLock()
+        # Called as listener(event, reference) after a request changes state. Events:
+        # pending, confirmed, declined, expired, cancelled, payment. Keep listeners quick
+        # (queue the work): they run while the book is locked.
+        self.listeners: list[Callable[[str, str], None]] = []
 
     @property
     def now(self) -> datetime:
         return self.directory.clock()
 
     def submit(self, request: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            return self._submit(request)
+
+    def _emit(self, event: str, reference: str) -> None:
+        for listener in self.listeners:
+            try:
+                listener(event, reference)
+            except Exception as exc:  # a broken listener must never lose a request
+                print(f"gentifi: listener failed on {event} {reference}: {exc}", file=sys.stderr)
+
+    def _submit(self, request: dict[str, Any]) -> dict[str, Any]:
         issues = schema_issues(request, "request")
         if issues:
             return self._receipt(request.get("request_id", "unknown"), "failed",
@@ -171,6 +194,7 @@ class RequestBook:
             return self._remember(key, fingerprint, self._receipt(rid, "failed", message=str(exc.args[0])))
 
         if request["action"] in {"cancel", "check_status"}:
+            self.expire_overdue()  # so a late status check never reports a dead request as pending
             return self._remember(key, fingerprint, self._existing(request, profile))
         return self._remember(key, fingerprint, self._new(request, profile))
 
@@ -178,6 +202,9 @@ class RequestBook:
 
     def _new(self, request: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         rid = request["request_id"]
+        if profile["business"]["id"] in self.directory.paused:
+            return self._receipt(rid, "declined", decline_reason="closed",
+                                 message=f"{profile['business']['name']} isn't taking requests right now.")
         problems = request_issues(request, profile)
         full = [i for i in problems if "place(s) left" in i.message]
         if full:
@@ -228,6 +255,8 @@ class RequestBook:
                                     confirm_by=_iso(self.now + timedelta(minutes=sla or DEFAULT_SLA_MINUTES)),
                                     message=f"Sent to {name}. They will confirm within {sla or DEFAULT_SLA_MINUTES} minutes.")
         self.bookings[reference] = {"request": request, "receipt": receipt, "business_id": profile["business"]["id"]}
+        if receipt["status"] == "pending_confirmation":
+            self._emit("pending", reference)
         return receipt
 
     def _existing(self, request: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
@@ -246,13 +275,94 @@ class RequestBook:
             self._take_places(booking["request"], slots, release=True)
         receipt = self._receipt(rid, "cancelled", reference=request["reference"], message="Cancelled.")
         booking["receipt"] = {**receipt, "request_id": booking["receipt"]["request_id"]}
+        self._emit("cancelled", request["reference"])
         return receipt
 
     def owner_respond(self, reference: str, accept: bool, message: str | None = None) -> dict[str, Any]:
-        """Resolve a pending request as the business owner would (demo/testing)."""
+        """Resolve a pending request as the business owner (owner relay, or demo/testing)."""
+        with self.lock:
+            receipt = self._owner_respond(reference, accept, message)
+            self._emit(receipt["status"], reference)
+            return receipt
+
+    def owner_suggest(self, reference: str, when: str) -> dict[str, Any]:
+        """The owner can't do the time asked but suggests another. The request is declined
+        with the suggestion: the agent checks with the customer and sends a new request,
+        so the customer still confirms exactly what is booked."""
+        with self.lock:
+            name = self.directory.get(self._pending(reference)["business_id"])["business"]["name"]
+            msg = (f"{name} can't do the time asked but suggests {when} instead. "
+                   "If that suits the customer, send a new request for that time.")
+            receipt = self._owner_respond(reference, False, msg, decline_reason="other")
+            self._emit("declined", reference)
+            return receipt
+
+    def expire_overdue(self) -> list[str]:
+        """Expire pending requests the owner didn't answer by confirm_by. Returns references."""
+        expired = []
+        with self.lock:
+            for reference, booking in self.bookings.items():
+                current = booking["receipt"]
+                if current["status"] == "pending_confirmation" and parse_time(current["confirm_by"]) <= self.now:
+                    receipt = self._receipt(current["request_id"], "expired", reference=reference,
+                                            message="The business didn't confirm in time, so nothing was ordered or booked.")
+                    self._settle(booking, receipt)
+                    expired.append(reference)
+                    self._emit("expired", reference)
+        return expired
+
+    def set_payment(self, reference: str, payment: dict[str, Any], message: str | None = None) -> dict[str, Any]:
+        """Attach payment details (or a paid status) to a confirmed request's receipt.
+        Gentifi only relays the business's own payment request; it never holds funds."""
+        with self.lock:
+            booking = self.bookings.get(reference)
+            if booking is None or booking["receipt"]["status"] not in {"confirmed", "held"}:
+                raise ValueError(f"no confirmed request with reference '{reference}'")
+            receipt = {**booking["receipt"], "payment": payment, "issued_at": _iso(self.now)}
+            if message:
+                receipt["message"] = message
+            self._settle(booking, receipt)
+            self._emit("payment", reference)
+            return receipt
+
+    def owner_cancel(self, reference: str, message: str | None = None) -> dict[str, Any]:
+        """The owner cancels a request they had confirmed (e.g. ran out after all)."""
+        with self.lock:
+            booking = self.bookings.get(reference)
+            if booking is None or booking["receipt"]["status"] not in {"confirmed", "held"}:
+                raise ValueError(f"no confirmed request with reference '{reference}'")
+            profile = self.directory.get(booking["business_id"])
+            slots = {r["slot_id"]: r for r in profile["availability"] if r["type"] == "slot"}
+            self._take_places(booking["request"], slots, release=True)
+            receipt = self._receipt(booking["receipt"]["request_id"], "cancelled", reference=reference,
+                                    message=message or f"Cancelled by {profile['business']['name']}.")
+            self._settle(booking, receipt)
+            self._emit("cancelled", reference)
+            return receipt
+
+    def mark_sold_out(self, business_id: str, offering_ids: set[str]) -> None:
+        """Record the owner saying these items are sold out (fresh, owner-confirmed)."""
+        with self.lock:
+            stamp = {"observed_at": _iso(self.now), "confidence": "confirmed", "source": "owner"}
+            for rec in self.directory.get(business_id)["availability"]:
+                if rec["type"] == "stock" and rec["offering_id"] in offering_ids:
+                    rec["status"] = "out_of_stock"
+                    rec.pop("quantity", None)
+                    rec["freshness"] = dict(stamp)
+
+    def _pending(self, reference: str) -> dict[str, Any]:
         booking = self.bookings.get(reference)
         if booking is None or booking["receipt"]["status"] != "pending_confirmation":
             raise ValueError(f"no pending request with reference '{reference}'")
+        return booking
+
+    def _settle(self, booking: dict[str, Any], receipt: dict[str, Any]) -> None:
+        booking["receipt"] = receipt
+        self.by_request[(booking["business_id"], receipt["request_id"])] = receipt
+
+    def _owner_respond(self, reference: str, accept: bool, message: str | None = None,
+                       decline_reason: str = "unavailable") -> dict[str, Any]:
+        booking = self._pending(reference)
         profile = self.directory.get(booking["business_id"])
         original = booking["receipt"]
         slots = {r["slot_id"]: r for r in profile["availability"] if r["type"] == "slot"}
@@ -268,9 +378,8 @@ class RequestBook:
                                     total=original.get("total"), message=message or "Confirmed by the business.")
         else:
             receipt = self._receipt(original["request_id"], "declined", reference=reference,
-                                    decline_reason="unavailable", message=message or "Declined by the business.")
-        booking["receipt"] = receipt
-        self.by_request[(booking["business_id"], original["request_id"])] = receipt
+                                    decline_reason=decline_reason, message=message or "Declined by the business.")
+        self._settle(booking, receipt)
         return receipt
 
     # ------------------------------------------------------------ helpers

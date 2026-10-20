@@ -5,8 +5,11 @@ Serves every profile in a folder to any MCP-capable agent:
     gentifi-mcp --profiles examples                       # stdio (Claude Desktop, etc.)
     gentifi-mcp --profiles examples --transport streamable-http
     gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
+    gentifi-mcp --profiles profiles --telegram            # owners answer on Telegram
 
---demo adds a tool that lets you play the business owner, so pending requests
+--telegram runs the owner confirmation relay alongside the server: pending
+requests go to the business owner's Telegram chat with one-tap buttons (see
+gentifi-relay for linking owners). --demo adds a tool that lets you play the business owner, so pending requests
 can be confirmed or declined. --now freezes the clock, so the example data stays
 fresh while you try things.
 """
@@ -15,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -45,8 +50,8 @@ returns the original receipt.
 """
 
 
-def build_server(directory: Directory, demo: bool = False) -> MCPServer:
-    book = RequestBook(directory)
+def build_server(directory: Directory, demo: bool = False, book: RequestBook | None = None) -> MCPServer:
+    book = book or RequestBook(directory)
     server = MCPServer(name="gentifi-reference", title="Gentifi reference server",
                        version="0.1.0", instructions=INSTRUCTIONS)
 
@@ -107,12 +112,33 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--demo", action="store_true", help="add the respond_as_owner tool")
     parser.add_argument("--now", default=os.environ.get("GENTIFI_NOW"),
                         help="freeze the clock at this ISO 8601 time (for demos and tests)")
+    parser.add_argument("--telegram", action="store_true",
+                        help="send pending requests to owners on Telegram (needs TELEGRAM_BOT_TOKEN, e.g. in .env)")
     args = parser.parse_args(argv)
 
     fixed: datetime | None = parse_time(args.now) if args.now else None
     clock = (lambda: fixed) if fixed else utc_now
     directory = Directory.from_folder(args.profiles, clock=clock)
-    build_server(directory, demo=args.demo).run(args.transport)
+    book = RequestBook(directory)
+    if args.telegram:
+        start_telegram_relay(book)
+    build_server(directory, demo=args.demo, book=book).run(args.transport)
+
+
+def start_telegram_relay(book: RequestBook) -> None:
+    from .relay import Links, OwnerRelay
+    from .relay.cli import db_path, telegram_channel
+    from .relay.telegram import TelegramError
+
+    try:
+        channel = telegram_channel()
+        username = channel.check()
+    except TelegramError as exc:
+        sys.exit(f"gentifi-mcp: can't start the Telegram relay: {exc}")
+    relay = OwnerRelay(book, channel, Links(db_path()), bot_username=username)
+    threading.Thread(target=relay.run, name="gentifi-relay", daemon=True).start()
+    # stderr only: with the stdio transport, stdout carries MCP messages
+    print(f"gentifi-mcp: owner relay running as @{username}", file=sys.stderr)
 
 
 if __name__ == "__main__":

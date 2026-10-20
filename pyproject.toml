@@ -18,6 +18,7 @@ dev = ["mcp>=2.0", "pytest>=8"]
 [project.scripts]
 gentifi-validate = "gentifi_profile.cli:main"
 gentifi-mcp = "gentifi_profile.server:main"
+gentifi-relay = "gentifi_profile.relay.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
