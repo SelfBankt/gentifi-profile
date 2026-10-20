@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+import string
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+INVITE_ALPHABET = string.ascii_letters + string.digits
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS merchants (
@@ -103,7 +106,9 @@ class Links:
 
     def invite(self, business_id: str) -> str:
         """A one-time code the owner uses with /start to link their chat to the business."""
-        code = secrets.token_urlsafe(9)  # 12 characters, fits Telegram's start parameter
+        # 12 letters and digits: fits Telegram's start parameter, and no _ or - for chat
+        # apps to treat as formatting and drop when the link is shown or copied
+        code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(12))
         self.configure(business_id)
         self._q("INSERT INTO invites (code, business_id, created_at) VALUES (?, ?, ?)",
                 code, business_id, _now())

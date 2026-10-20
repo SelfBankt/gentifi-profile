@@ -96,6 +96,13 @@ def test_invite_links_the_owner_once(setup):
     assert links.redeem(code, "3003", "Y") is None  # one use only
 
 
+def test_invite_codes_are_letters_and_digits_only():
+    links = Links()
+    codes = [links.invite(FARM) for _ in range(200)]
+    assert all(len(c) == 12 and c.isascii() and c.isalnum() for c in codes), "no _ or - to get lost in a link"
+    assert len(set(codes)) == len(codes)
+
+
 def test_strangers_get_no_access(setup):
     _, book, _, chat, relay, _ = setup()
     chat.type(STRANGER, "/orders")
