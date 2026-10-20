@@ -433,6 +433,8 @@ class RequestBook:
         return receipt
 
     def _remember(self, key: tuple[str, str], fingerprint: str, receipt: dict[str, Any]) -> dict[str, Any]:
+        if receipt["status"] == "failed":
+            return receipt  # nothing happened, so a corrected retry may reuse the request_id
         self.by_request[key] = receipt
         self.fingerprints[key] = fingerprint
         return receipt
