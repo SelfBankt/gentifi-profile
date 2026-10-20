@@ -418,11 +418,11 @@ class OwnerRelay:
         directory = self.book.directory
         name = self._profile(merchant.business_id)["business"]["name"]
         if command == "/pause":
-            directory.paused.add(merchant.business_id)
+            directory.pause(merchant.business_id)
             self.channel.send(inc.chat_id, f"Paused. {name} is hidden from AI assistants and new requests are "
                                            "declined until you send /resume.")
         elif command == "/resume":
-            directory.paused.discard(merchant.business_id)
+            directory.resume(merchant.business_id)
             self.channel.send(inc.chat_id, f"{name} is taking requests again.")
         elif command == "/orders":
             self._orders(inc, merchant)

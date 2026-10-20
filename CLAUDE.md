@@ -47,9 +47,16 @@ heading towards; the plan is for the toolkit to publish each business as a profi
     (SQLite: owner chat links, invites, prompt messages), `payments.py` (LNURL-pay
     invoice from the merchant's own Lightning address, LUD-21 verify, BOLT 11 amount
     check), `relay.py` (prompts, buttons, commands, expiry), `cli.py` (`gentifi-relay`)
+  - `nostr/` — publishing to Nostr. `events.py` (NIP-01 ids, BIP-340 signing via coincurve,
+    npub), `keys.py` (a key per business, AES-GCM encrypted in SQLite under
+    GENTIFI_NOSTR_MASTER_KEY), `mapping.py` (profile -> kind 0, NIP-15 stall/products,
+    NIP-99 listings, NIP-09 deletion when paused), `client.py` (publish/fetch; public
+    relays only with allow_public), `localrelay.py` (in-memory test relay),
+    `publisher.py` (republishes on Directory changes), `cli.py` (`gentifi-nostr`)
 - `tests/` — `test_profile.py` (spec and validator), `test_requests.py` (request
   edge cases), `test_server.py` (end to end over MCP), `test_relay.py` (relay through
-  a mock chat and fake wallet), `test_telegram.py` (adapter against a fake Bot API).
+  a mock chat and fake wallet), `test_telegram.py` (adapter against a fake Bot API),
+  `test_nostr.py` (vectors, key custody, mapping, round trip through the local relay).
 - `docs/telegram-merchant-bot-spec.md` — design of the Telegram merchant bot.
 - `docs/developers-page.md` — copy for the Gentifi Business Profile section on
   gentifi.com/standards.
@@ -62,6 +69,8 @@ python -m pytest -q
 gentifi-relay check                     # Telegram token from .env works?
 gentifi-relay invite gtf_hollowbrookfarm --lightning-address shop@wallet.com
 gentifi-mcp --profiles examples --telegram --transport streamable-http  # one copy only; see README
+gentifi-nostr init && gentifi-nostr relay                              # Nostr: master key, test relay
+gentifi-nostr publish gtf_hollowbrookfarm --profiles examples --relay ws://127.0.0.1:7777
 gentifi-validate examples/*.json examples/messages/*.json --profile examples/farm-shop.json --strict --now 2026-10-15T20:00:00+01:00
 gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
 ```
@@ -82,7 +91,11 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
   on fulfilment) via `Receipt.payment`. Never route funds through Gentifi.
 - The relay's store listeners must stay quick (they run under the RequestBook lock);
   the relay queues work. Owner-facing text is plain, short and button-first.
-- Secrets (bot token) come from the environment or a `.env` file, never the repo.
+- Secrets (bot token, Nostr master key) come from the environment or a `.env` file,
+  never the repo. Never print them.
+- Nostr: the owner never sees it. Publish to relays on this machine only unless
+  the user explicitly allows public relays; directory changes (sold out, pause,
+  resume) go through `Directory.changed` so they are republished.
 
 ## Publishing
 

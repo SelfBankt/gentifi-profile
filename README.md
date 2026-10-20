@@ -94,6 +94,7 @@ Design choices worth knowing:
 | `examples/` | valid example profiles and messages |
 | `src/gentifi_profile/` | Python validator and reference MCP server |
 | `src/gentifi_profile/relay/` | owner confirmation relay: owners answer requests on Telegram |
+| `src/gentifi_profile/nostr/` | publishing businesses to Nostr (NIP-15 and NIP-99) |
 | `tests/` | tests for both |
 
 ## Validate a profile
@@ -222,6 +223,48 @@ Owner links live in SQLite at `~/.gentifi/relay.db` (`GENTIFI_RELAY_DB` to chang
 The bot uses long polling, so it runs on any machine with internet access. The
 messaging layer is an interface, so WhatsApp can be added as another adapter.
 Design: [`docs/telegram-merchant-bot-spec.md`](docs/telegram-merchant-bot-spec.md).
+
+## Publish businesses to Nostr
+
+Gentifi can publish each business to Nostr, so any Nostr marketplace app or agent
+can read it. The owner never sees Nostr: Gentifi makes a key for each business and
+signs for it.
+
+| Event | What it holds |
+| --- | --- |
+| kind 0 (NIP-01) | the business's name, description, place and opening hours |
+| kind 30017 (NIP-15 stall) | the business, with collection and delivery as shipping zones |
+| kind 30018 (NIP-15 product) | each fixed-price product and variant; stock as `quantity` (0 when sold out, null when not tracked) |
+| kind 30402 (NIP-99 listing) | every offering, including services and items priced on request; `status` is `sold` when sold out |
+| kind 5 (NIP-09 deletion) | sent instead of the listings while the business is paused |
+
+Products and listings carry a `["freshness", observed_at, confidence, source]` tag,
+and every event a NIP-32 label (`["L", "com.gentifi"]`, `["l", <business id>,
+"com.gentifi"]`) so agents can ask a relay for Gentifi businesses.
+
+```bash
+pip install -e ".[nostr]"
+gentifi-nostr init                    # adds GENTIFI_NOSTR_MASTER_KEY to .env, once
+gentifi-nostr relay                   # a test relay on ws://127.0.0.1:7777 (in memory)
+gentifi-nostr events gtf_hollowbrookfarm --profiles examples       # dry run
+gentifi-nostr publish gtf_hollowbrookfarm --profiles examples --relay ws://127.0.0.1:7777
+gentifi-nostr show gtf_hollowbrookfarm --relay ws://127.0.0.1:7777
+gentifi-mcp --profiles examples --telegram --transport streamable-http --nostr-relay ws://127.0.0.1:7777
+```
+
+With `--nostr-relay`, the server publishes every business when it starts and again
+when its listing changes: an owner marking items sold out, `/pause` (which deletes
+the listings) and `/resume`.
+
+- **Keys** are kept in `~/.gentifi/relay.db`, encrypted (AES-256-GCM) with the master
+  key from `.env`. Keep a copy of the master key: without it Gentifi can't sign for
+  those businesses again. Signing sits behind a `Signer` interface so a NIP-46 remote
+  signer can replace this later.
+- **Only relays on this machine are allowed** unless you pass `--allow-public`
+  (`--nostr-allow-public` for the server). Events sent to a public relay are copied
+  by others and can't be fully taken back.
+- Pausing and resuming are kept in memory, like requests: a restarted server
+  publishes every business as open.
 
 ## How this relates to the Gentifi toolkit
 
