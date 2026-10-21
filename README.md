@@ -223,6 +223,10 @@ asks for. With `--profiles <toolkit businesses folder>` the server also reads th
 `gentifi-profile.json` the host writes for each business, and picks up changes within
 30 seconds.
 
+Businesses being onboarded are listed in `onboarding.json` next to the relay database,
+rewritten whenever one is invited with `--onboard` or goes live; the toolkit's host reads it
+(`GENTIFI_ONBOARDING_FILE`) to keep them hidden from customers' agents until then.
+
 ### Photos of prices
 
 An owner linked to the bot can send it a photo of their price board or menu (or a

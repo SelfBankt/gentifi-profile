@@ -113,8 +113,14 @@ ssh -N -L 8765:127.0.0.1:8765 root@mcp.gentifi.com
 
 ## Adding a real business
 
-Export it from the toolkit as a profile (`gentifi profile`), put the file in
-`/srv/gentifi/profiles`, then `gentifi-bot invite <business> --onboard` and send the
-owner the link. Until the toolkit's confirmation page hands orders to the bot (not built
-yet), customers' orders through `mcp.gentifi.com` still go to the business by email or
-its checkout, not to Telegram.
+1. Set it up with the toolkit (`gentifi init`, from its sheet, an export or `gentifi draft`)
+   and note its id: `gtf_` plus its slug's letters and digits (`gentifi profile` shows it).
+2. **First** run `gentifi-bot invite <id> --onboard`. The business is now on the bot's
+   onboarding list (`/var/lib/gentifi-bot/onboarding.json`), which the toolkit's host reads.
+3. **Then** copy its folder into `/srv/gentifi/businesses/`, `chown -R gentifi:gentifi` it and
+   `systemctl restart gentifi-host` (otherwise the host finds it at its next ten-minute scan).
+   The host loads it hidden: customers' agents can't find it, and it has no page or orders.
+4. Send the owner the link. If they open it before the host has loaded the business, the bot
+   says the listing is still being set up; run `gentifi-bot review <id>` to send it to them.
+5. They check the summary in Telegram, set how customers pay and tap Go live; within seconds
+   the host shows the business and orders reach them in Telegram.

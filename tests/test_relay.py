@@ -502,3 +502,32 @@ def test_env_file_is_found_in_a_parent_folder(tmp_path, monkeypatch):
     assert load_env(inner) == tmp_path / ".env"
     import os
     assert os.environ["GENTIFI_TEST_TOKEN"] == "123:abc"
+
+
+def test_the_onboarding_list_is_kept_for_the_toolkits_host(tmp_path):
+    db = tmp_path / "relay.db"
+
+    def listed():
+        return json.loads((tmp_path / "onboarding.json").read_text())["onboarding"]
+
+    links = Links(db)
+    assert listed() == [], "written as soon as the database is opened"
+    links.invite(FARM, onboarding=True)
+    links.invite("gtf_brooksideplumbing")
+    assert listed() == [FARM]
+    assert listed() == Links(db).onboarding(), "another process (gentifi-bot) sees the same"
+    links.set_status(FARM, "live")
+    assert listed() == []
+    assert not list(tmp_path.glob("*.tmp")), "replaced whole, never left half-written"
+
+
+def test_an_invite_before_the_folder_is_copied_tells_nobody(tmp_path):
+    book = RequestBook(Directory.from_folder(tmp_path))  # the business isn't there yet
+    links, chat = Links(), MockChannel()
+    chat.type("3003", f"/start {links.team_invite()}", name="Finn")
+    relay = OwnerRelay(book, chat, links)
+    relay.step()
+    before = len(chat.messages)
+    links.invite("gtf_newbakery01", onboarding=True)
+    relay.tick()
+    assert len(chat.messages) == before, "no owner yet, nothing to report"

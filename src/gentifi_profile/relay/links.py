@@ -6,6 +6,8 @@ reference server's memory (see store.py).
 
 from __future__ import annotations
 
+import json
+import os
 import secrets
 import sqlite3
 import string
@@ -94,6 +96,9 @@ class Prompt:
 
 class Links:
     def __init__(self, path: Path | str = ":memory:"):
+        # Next to the database, the businesses still being onboarded, for the toolkit's host to
+        # hide from customers' agents until the owner goes live (business ids only)
+        self.onboarding_file = None if str(path) == ":memory:" else Path(path).with_name("onboarding.json")
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._lock = threading.Lock()
         with self._lock:
@@ -102,6 +107,7 @@ class Links:
                 if column not in {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}:
                     self._db.execute(sql)
             self._db.commit()
+        self._write_onboarding()
 
     def _q(self, sql: str, *args: object) -> list[tuple]:
         with self._lock, self._db:
@@ -139,6 +145,14 @@ class Links:
     def set_status(self, business_id: str, status: str) -> None:
         self.configure(business_id)
         self._q("UPDATE merchants SET status = ? WHERE business_id = ?", status, business_id)
+        self._write_onboarding()
+
+    def _write_onboarding(self) -> None:
+        if self.onboarding_file is None:
+            return
+        tmp = self.onboarding_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"onboarding": sorted(self.onboarding())}) + "\n")
+        os.replace(tmp, self.onboarding_file)  # readers never see half a file
 
     def request_review(self, business_id: str) -> None:
         """Ask the running bot to reload the profile and show it to the owner again. Clears the
