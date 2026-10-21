@@ -1,7 +1,7 @@
 """Which owner chat belongs to which business, and how that business takes payment.
 
-Kept in SQLite so links survive restarts. Requests themselves stay in the
-reference server's memory (see store.py).
+Kept in SQLite so links survive restarts, and so do requests (orders), without who the
+customer is: their name, contact details and note are only ever held in memory (see store.py).
 """
 
 from __future__ import annotations
@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS owner_edits (
     sheet_value TEXT NOT NULL,                 -- JSON: what the profile said when the owner edited it
     edited_at   TEXT NOT NULL,
     PRIMARY KEY (business_id, offering_id, field)
+);
+CREATE TABLE IF NOT EXISTS orders (
+    reference   TEXT PRIMARY KEY,
+    record      TEXT NOT NULL,                 -- JSON from RequestBook.on_save: never the customer's details
+    created_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS prompts (
     reference   TEXT PRIMARY KEY,
@@ -297,6 +302,25 @@ class Links:
     def team(self) -> list[tuple[str, str | None]]:
         """(chat id, name) for each team chat."""
         return self._q("SELECT chat_id, name FROM team ORDER BY linked_at")
+
+    # ------------------------------------------------------------ orders
+
+    def save_order(self, reference: str, record: dict) -> None:
+        """Keep a request through restarts (RequestBook.on_save). The record has no customer details."""
+        self._q("INSERT OR REPLACE INTO orders VALUES (?, ?, ?)", reference, json.dumps(record), record["created_at"])
+
+    def orders(self, newer_than: datetime) -> dict[str, dict]:
+        """Requests made since newer_than, for RequestBook.restore."""
+        return {reference: json.loads(record) for reference, record, created_at
+                in self._q("SELECT reference, record, created_at FROM orders")
+                if datetime.fromisoformat(created_at) > newer_than}
+
+    def forget_orders(self, older_than: datetime) -> None:
+        """Delete requests made before older_than: nothing needs them after a week."""
+        old = [(r,) for r, created_at in self._q("SELECT reference, created_at FROM orders")
+               if datetime.fromisoformat(created_at) <= older_than]
+        with self._lock, self._db:
+            self._db.executemany("DELETE FROM orders WHERE reference = ?", old)
 
     # ------------------------------------------------------------ prompts
 

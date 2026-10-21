@@ -110,7 +110,7 @@ class TelegramChannel:
                 chat = (msg.get("chat") or {}).get("id")
                 if chat is not None:
                     out.append(Incoming("button", str(chat), q.get("data", ""), str(msg.get("message_id")),
-                                        ack_id=q["id"], name=q.get("from", {}).get("first_name")))
+                                        ack_id=q["id"], name=q.get("from", {}).get("first_name"), text=msg.get("text")))
             elif "message" in u:
                 m = u["message"]
                 if m.get("chat", {}).get("type") != "private":

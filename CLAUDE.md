@@ -44,7 +44,7 @@ heading towards; the plan is for the toolkit to publish each business as a profi
     `--telegram` runs the owner relay in a background thread on the same RequestBook
   - `relay/` — owner confirmation relay. `channel.py` (OwnerChannel interface +
     MockChannel), `telegram.py` (Bot API, long polling, stdlib only), `links.py`
-    (SQLite: owner chat links, invites, prompt messages), `handoff.py` (orders from the
+    (SQLite: owner chat links, invites, prompt messages, open orders without the customer), `handoff.py` (orders from the
     toolkit's confirmation page, over 127.0.0.1 with a shared secret), `payments.py` (LNURL-pay
     invoice from the merchant's own Lightning address, LUD-21 verify, BOLT 11 amount
     check), `relay.py` (prompts, buttons, commands, expiry), `cli.py` (`gentifi-relay`)
@@ -101,6 +101,10 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
 - Customers' names, contact details and notes are held in memory only, never saved, and
   forgotten when a request ends (declined, expired, cancelled, collected/delivered/done)
   or after `KEEP_CUSTOMER_DAYS` (7) at most. gentifi.com/privacy promises this: keep it.
+  Requests themselves are saved (`RequestBook.on_save`, the relay's `orders` table, a week at most)
+  so a restart loses nothing; after one, the relay reads the customer's details back from the
+  owner's own message when a button on it is pressed, and never rewrites an open request's
+  message before then.
 - Secrets (bot token, Nostr master key) come from the environment or a `.env` file,
   never the repo. Never print them.
 - Nostr: the owner never sees it. Publish to relays on this machine only unless
