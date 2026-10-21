@@ -5,11 +5,22 @@
   delivery as its shipping zones
 - kind 30018 (NIP-15): one product per fixed-price product (and per variant), with
   stock as `quantity` (0 when sold out, null when not tracked)
-- kind 30402 (NIP-99): one classified listing per offering, including services and
-  items priced on enquiry; `status` is `sold` when sold out
+- kind 30402 (NIP-99, with the GammaMarkets market spec's tags): one listing per
+  offering, including services and items priced on enquiry; `status` is `sold` when
+  sold out. Market-spec tags: `type`, `visibility`, `stock`, `spec`, `image`, the
+  shop's collection, its shipping options, and an offering with sizes as a `variable`
+  product whose sizes are `variation`s pointing at it
+- kind 30405 (market spec): the business's catalogue as a product collection
+- kind 30406 (market spec): collection from the shop (`pickup`) and local delivery
+  (`standard`) as shipping options
 - kind 5 (NIP-09): when the business is paused (or back in onboarding after being
-  published), a deletion request for the stall, products and listings instead;
-  resuming or going live publishes them again
+  published), a deletion request for the stall, products, listings, collection and
+  shipping options instead; resuming or going live publishes them again
+
+NIP-15 is deprecated in favour of NIP-99, and the market spec
+(github.com/GammaMarkets/market-spec) builds a full shop on NIP-99; the NIP-15 events
+are kept for apps that still read them. Items priced on enquiry, "from" or a range
+have no `price` tag, which the market spec requires, so its apps may leave them out.
 
 Freshness is the heart of the profile, so products and listings carry a
 ["freshness", observed_at, confidence, source] tag and say when stock was checked.
@@ -26,7 +37,8 @@ from ..freshness import parse_time
 
 LABEL = "com.gentifi"
 KIND_METADATA, KIND_DELETION, KIND_STALL, KIND_PRODUCT, KIND_LISTING = 0, 5, 30017, 30018, 30402
-LISTING_KINDS = (KIND_STALL, KIND_PRODUCT, KIND_LISTING)
+KIND_COLLECTION, KIND_SHIPPING = 30405, 30406
+LISTING_KINDS = (KIND_STALL, KIND_PRODUCT, KIND_LISTING, KIND_COLLECTION, KIND_SHIPPING)
 ZERO_DECIMAL = {"JPY", "KRW", "ISK", "HUF"}
 SOLD_OUT = {"out_of_stock", "out_of_season"}
 WEEK = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -35,17 +47,20 @@ DAY_NAMES = {"mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu", "fri": "Fri
 
 def profile_events(profile: dict[str, Any], created_at: int, paused: bool = False,
                    pubkey: str | None = None, reason: str | None = None) -> list[dict[str, Any]]:
-    """Unsigned events for a profile. With paused, the listings are replaced by a deletion
-    request (which needs the business's pubkey to name what it deletes) giving the reason."""
+    """Unsigned events for a profile. The business's pubkey links its listings to its
+    collection and shipping options. With paused, the listings are replaced by a deletion
+    request giving the reason."""
+    if pubkey is None:
+        raise ValueError("needs the business's pubkey to link its listings, collection and shipping options")
     business = profile["business"]
     labels = [["L", LABEL], ["l", business["id"], LABEL]]
     events = [_event(KIND_METADATA, created_at, labels, json.dumps(_metadata(business), ensure_ascii=False))]
+    listings = _listings(profile, created_at, labels, pubkey)
     listings = [_stall(profile, created_at, labels), *_products(profile, created_at, labels),
-                *_listings(profile, created_at, labels)]
+                *_shipping_options(profile, created_at, labels),
+                _collection(profile, created_at, labels, pubkey, listings), *listings]
     if not paused:
         return events + listings
-    if pubkey is None:
-        raise ValueError("a paused business needs its pubkey to delete its listings")
     refs = [["a", f"{e['kind']}:{pubkey}:{_d(e)}"] for e in listings]
     kinds = [["k", str(k)] for k in LISTING_KINDS]
     events.append(_event(KIND_DELETION, created_at, refs + kinds + labels,
@@ -103,31 +118,92 @@ def _products(profile: dict[str, Any], created_at: int, labels: list[list[str]])
     return out
 
 
-def _listings(profile: dict[str, Any], created_at: int, labels: list[list[str]]) -> list[dict[str, Any]]:
+def _listings(profile: dict[str, Any], created_at: int, labels: list[list[str]], pubkey: str) -> list[dict[str, Any]]:
     business = profile["business"]
+    collection = ["a", f"{KIND_COLLECTION}:{pubkey}:{business['id']}"]
+    zones = {z["id"] for z in _zones(profile)}
+    geo = business["location"].get("geo")
     out = []
-    for offering, variant, price in _priced_items(profile):
-        stock = _stock(profile, offering, variant)
+    for offering, variant, price, role in _listed_items(profile):
+        stock = _stock(profile, offering, variant) if role != "variable" else None
+        sold = _all_sold_out(profile, offering) if role == "variable" else bool(stock and stock["status"] in SOLD_OUT)
         name = _item_name(offering, variant)
         summary = f"{_price_text(price)} at {business['name']}"
         tags = [["d", _item_id(offering, variant)], ["title", name], ["summary", summary],
                 ["published_at", str(created_at)], ["location", _place(business)]]
         if price.get("type") == "fixed":
             tags.append(["price", _amount_text(price["amount"]), price["amount"]["currency"]])
-        geo = business["location"].get("geo")
         if geo:
             tags.append(["g", geohash(geo["lat"], geo["lng"], 7)])
+        tags.append(["type", role, "digital" if offering["fulfilment"] == ["remote"] else "physical"])
+        tags.append(["visibility", "pre-order" if stock and stock["status"] == "preorder" else "on-sale"])
+        quantity = _quantity(stock)
+        if quantity is not None:
+            tags.append(["stock", str(quantity)])
+        specs = _specs(offering, price, stock)
+        tags += [["spec", k, v] for k, v in specs]
+        tags += [["image", url, "", str(i)] for i, url in enumerate(offering.get("images") or [])]
         tags += [["t", t] for t in _topics(profile, offering)]
-        tags.append(["status", "sold" if stock and stock["status"] in SOLD_OUT else "active"])
+        tags.append(["a", f"{KIND_LISTING}:{pubkey}:{offering['id']}"] if role == "variation" else collection)
+        tags += [["shipping_option", f"{KIND_SHIPPING}:{pubkey}:{f}"] for f in offering["fulfilment"] if f in zones]
+        tags.append(["status", "sold" if sold else "active"])
         tags += _freshness(stock) + labels
         lines = [f"**{name}** — {_price_text(price)}"]
         if offering.get("description"):
             lines.append(offering["description"])
-        specs = _specs(offering, price, stock)
+        if role == "variable":
+            lines.append("Choose from: " + ", ".join(f"{v['name']} ({_price_text(v.get('price') or offering['price'])})"
+                                                      for v in offering["variants"]) + ".")
         if specs:
             lines.append("\n".join(f"- {k}: {v}" for k, v in specs))
         lines.append(f"Ask your AI assistant to order or book from {business['name']}.")
         out.append(_event(KIND_LISTING, created_at, tags, "\n\n".join(lines)))
+    return out
+
+
+def _collection(profile: dict[str, Any], created_at: int, labels: list[list[str]], pubkey: str,
+                listings: list[dict[str, Any]]) -> dict[str, Any]:
+    """The business's catalogue: every listing except sizes, which point at their product."""
+    business = profile["business"]
+    tags = [["d", business["id"]], ["title", business["name"]]]
+    if business.get("description"):
+        tags.append(["summary", business["description"]])
+    tags.append(["location", _place(business)])
+    geo = business["location"].get("geo")
+    if geo:
+        tags.append(["g", geohash(geo["lat"], geo["lng"], 7)])
+    tags += [["a", f"{KIND_LISTING}:{pubkey}:{_d(e)}"] for e in listings
+             if next(t[1] for t in e["tags"] if t[0] == "type") != "variation"]
+    tags += [["shipping_option", f"{KIND_SHIPPING}:{pubkey}:{z['id']}"] for z in _zones(profile)]
+    return _event(KIND_COLLECTION, created_at, tags + labels, _about(business))
+
+
+def _shipping_options(profile: dict[str, Any], created_at: int, labels: list[list[str]]) -> list[dict[str, Any]]:
+    """Collection from the shop and local delivery. The market spec needs a country, so
+    without one in the address there are none."""
+    business = profile["business"]
+    address = business["location"].get("address", {})
+    if not address.get("country"):
+        return []
+    currency = _currency(profile)
+    delivery = profile["policies"].get("delivery") or {}
+    out = []
+    for zone in _zones(profile):
+        pickup = zone["id"] == "collection"
+        fee = None if pickup else delivery.get("fee")
+        tags = [["d", zone["id"]], ["title", zone["name"]],
+                ["price", _amount_text(fee) if fee else "0", fee["currency"] if fee else currency],
+                ["country", address["country"]], ["service", "pickup" if pickup else "standard"]]
+        if pickup:
+            tags.append(["location", _pickup_place(business)])
+            geo = business["location"].get("geo")
+            if geo:
+                tags.append(["g", geohash(geo["lat"], geo["lng"], 7)])
+            content = " ".join(p for p in [f"Collect from {business['name']}, {_pickup_place(business)}.",
+                                           hours_text(business)] if p)
+        else:
+            content = _delivery_text(delivery, zone)
+        out.append(_event(KIND_SHIPPING, created_at, tags + labels, content))
     return out
 
 
@@ -142,6 +218,21 @@ def _priced_items(profile: dict[str, Any]):
             yield offering, None, offering["price"]
         for variant in variants:
             yield offering, variant, variant.get("price") or offering["price"]
+
+
+def _listed_items(profile: dict[str, Any]):
+    """(offering, variant, price, market-spec role) for each listing: an offering with sizes
+    is a `variable` product, then each size a `variation`; any other is `simple`."""
+    for offering in profile["offerings"]:
+        variants = offering.get("variants") or []
+        yield offering, None, offering["price"], "variable" if variants else "simple"
+        for variant in variants:
+            yield offering, variant, variant.get("price") or offering["price"], "variation"
+
+
+def _all_sold_out(profile: dict[str, Any], offering: dict[str, Any]) -> bool:
+    stocks = [_stock(profile, offering, v) for v in offering["variants"]]
+    return all(s and s["status"] in SOLD_OUT for s in stocks)
 
 
 def _item_id(offering: dict[str, Any], variant: dict[str, Any] | None) -> str:
@@ -250,6 +341,33 @@ def _price_text(price: dict[str, Any]) -> str:
     if price["type"] == "range":
         return f"{_money_text(price['amount'])}–{_money_text(price['max_amount'])}{per}"
     return f"{_money_text(price['amount'])}{per}"
+
+
+def _pickup_place(business: dict[str, Any]) -> str:
+    """The street address too, but only for premises open to the public."""
+    if not business["location"].get("premises_open_to_public"):
+        return _place(business)
+    address = business["location"].get("address", {})
+    return ", ".join(p for p in [address.get("line1"), address.get("locality"), address.get("postal_code")] if p)
+
+
+def _delivery_text(delivery: dict[str, Any], zone: dict[str, Any]) -> str:
+    parts = ["Local delivery"]
+    if zone["regions"]:
+        parts.append(f"to {_join(zone['regions'])}")
+    if delivery.get("days"):
+        parts.append(f"on {_days(delivery['days'])}")
+    text = " ".join(parts) + "."
+    if delivery.get("fee"):
+        text += f" {_money_text(delivery['fee'])}"
+        text += f", free over {_money_text(delivery['free_over'])}." if delivery.get("free_over") else "."
+    if delivery.get("minimum_order"):
+        text += f" Minimum order {_money_text(delivery['minimum_order'])}."
+    return text
+
+
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 def _place(business: dict[str, Any]) -> str:

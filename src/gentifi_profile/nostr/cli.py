@@ -26,11 +26,12 @@ from .client import RelayError, check_relays, fetch
 from .events import npub
 from .keys import KeyStore, NostrKeyError, add_master_key, master_key_from_env
 from .localrelay import LocalRelay
-from .mapping import KIND_DELETION, KIND_LISTING, KIND_METADATA, KIND_PRODUCT, KIND_STALL, LABEL
+from .mapping import (KIND_COLLECTION, KIND_DELETION, KIND_LISTING, KIND_METADATA, KIND_PRODUCT, KIND_SHIPPING,
+                      KIND_STALL, LABEL)
 from .publisher import Publisher
 
 KIND_NAMES = {KIND_METADATA: "profile", KIND_STALL: "stall", KIND_PRODUCT: "product", KIND_LISTING: "listing",
-              KIND_DELETION: "deletion"}
+              KIND_COLLECTION: "catalogue", KIND_SHIPPING: "shipping", KIND_DELETION: "deletion"}
 
 
 def keystore() -> KeyStore:
@@ -129,6 +130,11 @@ def _describe(event: dict) -> str:
     if event["kind"] == KIND_LISTING:
         summary = tags.get("summary", [""])[0]
         return f"{kind:9} {d:16} {summary}, {tags.get('status', ['?'])[0]}"
+    if event["kind"] == KIND_COLLECTION:
+        return f"{kind:9} {d:16} {sum(1 for t in event['tags'] if t[0] == 'a')} listings"
+    if event["kind"] == KIND_SHIPPING:
+        price = tags.get("price", ["?", ""])
+        return f"{kind:9} {d:16} {tags.get('service', ['?'])[0]}, {price[0]} {price[1]}"
     return f"{kind:9} {d}"
 
 
