@@ -58,6 +58,12 @@ class Directory:
         # Called with a business id whenever its listing changes (e.g. to republish it).
         # Keep them quick: they can run while the RequestBook is locked.
         self.listeners: list[Callable[[str], None]] = []
+        # The owner's word on stock ("sold out", "back in stock"), by business and offering:
+        # {"status": ..., "at": ...}. Kept when a profile is read again, and applied over it
+        # unless the file's own stock record is newer (the owner updated their sheet since).
+        self.marks: dict[str, dict[str, dict[str, str]]] = {}
+        # Called with a business id and its marks whenever they change, to save them
+        self.on_marks: Callable[[str, dict[str, dict[str, str]]], None] | None = None
         for p in profiles or []:
             self.add(p)
 
@@ -104,6 +110,55 @@ class Directory:
             raise ValueError("invalid profile: " + "; ".join(f"{i.path}: {i.message}" for i in errors[:3]))
         # Work on a copy: bookings change availability in memory.
         self.profiles[profile["business"]["id"]] = copy.deepcopy(profile)
+        self._apply_marks(profile["business"]["id"])
+
+    def set_stock(self, business_id: str, offering_ids: set[str], status: str, at: str) -> None:
+        """The owner says these items are sold out (out_of_stock) or back (in_stock), at this time."""
+        marks = self.marks.setdefault(business_id, {})
+        for offering_id in offering_ids:
+            marks[offering_id] = {"status": status, "at": at}
+        self._apply_marks(business_id)
+        self._save_marks(business_id)
+        self.changed(business_id)
+
+    def restore_marks(self, marks: dict[str, dict[str, dict[str, str]]]) -> None:
+        """The marks saved before a restart, applied to the profiles already loaded."""
+        self.marks = {business_id: dict(m) for business_id, m in marks.items()}
+        for business_id in list(self.marks):
+            if business_id in self.profiles:
+                self._apply_marks(business_id)
+                self.changed(business_id)
+
+    def _apply_marks(self, business_id: str) -> None:
+        profile, marks = self.profiles.get(business_id), self.marks.get(business_id)
+        if not profile or not marks:
+            return
+        availability = profile["availability"]
+        offerings = {o["id"] for o in profile["offerings"]}
+        stale = []
+        for offering_id, mark in marks.items():
+            records = [r for r in availability if r["type"] == "stock" and r["offering_id"] == offering_id]
+            at = parse_time(mark["at"])
+            if (offering_id not in offerings or parse_time(profile["updated_at"]) > at
+                    or any(parse_time(r["freshness"]["observed_at"]) > at for r in records)):
+                stale.append(offering_id)  # gone from the catalogue, or the sheet has changed since
+                continue
+            if not any("variant_id" not in r for r in records):
+                # A whole-item record, so variants without their own record (or untracked items) follow it
+                records.append({"type": "stock", "offering_id": offering_id})
+                availability.append(records[-1])
+            for rec in records:
+                rec["status"] = mark["status"]
+                rec.pop("quantity", None)
+                rec["freshness"] = {"observed_at": mark["at"], "confidence": "confirmed", "source": "owner"}
+        for offering_id in stale:
+            del marks[offering_id]
+        if stale:
+            self._save_marks(business_id)
+
+    def _save_marks(self, business_id: str) -> None:
+        if self.on_marks:
+            self.on_marks(business_id, dict(self.marks.get(business_id, {})))
 
     def reload(self, business_id: str) -> dict[str, Any]:
         """Read the business's profile from the folder again, after Gentifi has edited it.
@@ -443,19 +498,8 @@ class RequestBook:
 
     def _set_stock(self, business_id: str, offering_ids: set[str], status: str) -> None:
         with self.lock:
-            stamp = {"observed_at": _iso(self.now), "confidence": "confirmed", "source": "owner"}
-            availability = self.directory.get(business_id)["availability"]
-            for offering_id in offering_ids:
-                records = [r for r in availability if r["type"] == "stock" and r["offering_id"] == offering_id]
-                if not any("variant_id" not in r for r in records):
-                    # A whole-item record, so variants without their own record (or untracked items) follow it
-                    records.append({"type": "stock", "offering_id": offering_id})
-                    availability.append(records[-1])
-                for rec in records:
-                    rec["status"] = status
-                    rec.pop("quantity", None)
-                    rec["freshness"] = dict(stamp)
-            self.directory.changed(business_id)
+            self.directory.get(business_id)  # an unknown business is a KeyError, not a mark
+            self.directory.set_stock(business_id, offering_ids, status, _iso(self.now))
 
     def _pending(self, reference: str) -> dict[str, Any]:
         booking = self.bookings.get(reference)

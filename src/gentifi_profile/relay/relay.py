@@ -102,6 +102,9 @@ class OwnerRelay:
         self._stop = threading.Event()
         book.listeners.append(self._on_event)
         hide_onboarding(book.directory, links)
+        with book.lock:  # what owners marked sold out or back in stock before a restart
+            book.directory.on_marks = links.save_stock_marks
+            book.directory.restore_marks(links.stock_marks())
 
     # ------------------------------------------------------------ plumbing
 

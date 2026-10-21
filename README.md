@@ -174,7 +174,10 @@ Please answer by 22:00 today.
 - **No answer** by `confirm_by` expires the request; nothing is confirmed.
 - Owners can send `/orders`, `/listing`, `/soldout`, `/instock`, `/pause`, `/resume` and `/help`.
   `/soldout` and `/instock` list the shop's products as buttons: one tap marks an item sold
-  out or back in stock (every size of it), owner-confirmed and fresh.
+  out or back in stock (every size of it), owner-confirmed and fresh. Marks are saved in the
+  database, so they last through a restart and through Gentifi editing the profile, until the
+  profile is newer (its `updated_at`, or the item's stock record: the owner's sheet was read
+  again after the mark).
 
 Set up:
 
@@ -226,6 +229,9 @@ asks for. With `--profiles <toolkit businesses folder>` the server also reads th
 Businesses being onboarded are listed in `onboarding.json` next to the relay database,
 rewritten whenever one is invited with `--onboard` or goes live; the toolkit's host reads it
 (`GENTIFI_ONBOARDING_FILE`) to keep them hidden from customers' agents until then.
+In the same way, `stock.json` holds what owners have marked sold out or back in stock, by
+business and offering id with the time of each mark; the host (`GENTIFI_STOCK_FILE`) shows
+it to customers' agents over the sheet, within 5 seconds, unless the sheet is newer.
 
 ### Photos of prices
 

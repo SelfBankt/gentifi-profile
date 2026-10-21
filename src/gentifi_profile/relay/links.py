@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS team (
     name        TEXT,
     linked_at   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS stock_marks (
+    business_id TEXT NOT NULL,
+    offering_id TEXT NOT NULL,
+    status      TEXT NOT NULL,                 -- 'out_of_stock' or 'in_stock', as the owner said
+    marked_at   TEXT NOT NULL,
+    PRIMARY KEY (business_id, offering_id)
+);
 CREATE TABLE IF NOT EXISTS prompts (
     reference   TEXT PRIMARY KEY,
     business_id TEXT NOT NULL,
@@ -63,6 +70,14 @@ MIGRATIONS = {
     ("invites", "role"): "ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'owner'",
 }
 MERCHANT_COLUMNS = "business_id, chat_id, owner_name, lightning_address, payment_link, status, change_request"
+
+
+def _write_json(path: Path | None, doc: object) -> None:
+    if path is None:
+        return
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, sort_keys=True) + "\n")
+    os.replace(tmp, path)  # readers never see half a file
 
 
 def _now() -> str:
@@ -99,6 +114,8 @@ class Links:
         # Next to the database, the businesses still being onboarded, for the toolkit's host to
         # hide from customers' agents until the owner goes live (business ids only)
         self.onboarding_file = None if str(path) == ":memory:" else Path(path).with_name("onboarding.json")
+        # And what owners have marked sold out or back in stock, for the host to show customers' agents
+        self.stock_file = None if str(path) == ":memory:" else Path(path).with_name("stock.json")
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._lock = threading.Lock()
         with self._lock:
@@ -108,6 +125,7 @@ class Links:
                     self._db.execute(sql)
             self._db.commit()
         self._write_onboarding()
+        self._write_stock()
 
     def _q(self, sql: str, *args: object) -> list[tuple]:
         with self._lock, self._db:
@@ -148,11 +166,28 @@ class Links:
         self._write_onboarding()
 
     def _write_onboarding(self) -> None:
-        if self.onboarding_file is None:
-            return
-        tmp = self.onboarding_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"onboarding": sorted(self.onboarding())}) + "\n")
-        os.replace(tmp, self.onboarding_file)  # readers never see half a file
+        _write_json(self.onboarding_file, {"onboarding": sorted(self.onboarding())})
+
+    # ------------------------------------------------------------ stock
+
+    def stock_marks(self) -> dict[str, dict[str, dict[str, str]]]:
+        """{business id: {offering id: {"status": ..., "at": ...}}}, as Directory.marks holds them."""
+        marks: dict[str, dict[str, dict[str, str]]] = {}
+        for business_id, offering_id, status, at in self._q(
+                "SELECT business_id, offering_id, status, marked_at FROM stock_marks ORDER BY business_id, offering_id"):
+            marks.setdefault(business_id, {})[offering_id] = {"status": status, "at": at}
+        return marks
+
+    def save_stock_marks(self, business_id: str, marks: dict[str, dict[str, str]]) -> None:
+        """Replace a business's marks (Directory.on_marks), and the file the host reads."""
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM stock_marks WHERE business_id = ?", (business_id,))
+            self._db.executemany("INSERT INTO stock_marks VALUES (?, ?, ?, ?)",
+                                 [(business_id, o, m["status"], m["at"]) for o, m in sorted(marks.items())])
+        self._write_stock()
+
+    def _write_stock(self) -> None:
+        _write_json(self.stock_file, {"stock": self.stock_marks()})
 
     def request_review(self, business_id: str) -> None:
         """Ask the running bot to reload the profile and show it to the owner again. Clears the
