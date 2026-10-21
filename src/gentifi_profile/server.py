@@ -112,6 +112,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--profiles", type=Path, default=Path(os.environ.get("GENTIFI_PROFILES", "profiles")),
                         help="folder of profile JSON files (default: $GENTIFI_PROFILES or ./profiles)")
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("GENTIFI_PORT", 8000)),
+                        help="port for --transport streamable-http, on 127.0.0.1 (default: $GENTIFI_PORT or 8000)")
     parser.add_argument("--demo", action="store_true", help="add the respond_as_owner tool")
     parser.add_argument("--now", default=os.environ.get("GENTIFI_NOW"),
                         help="freeze the clock at this ISO 8601 time (for demos and tests)")
@@ -133,7 +135,11 @@ def main(argv: list[str] | None = None) -> None:
         start_telegram_relay(book)
     if args.nostr_relay:
         start_nostr_publisher(book, args.nostr_relay, args.nostr_allow_public)
-    build_server(directory, demo=args.demo, book=book).run(args.transport)
+    server = build_server(directory, demo=args.demo, book=book)
+    if args.transport == "streamable-http":
+        server.run(args.transport, port=args.port)
+    else:
+        server.run(args.transport)
 
 
 def hide_onboarding(directory: Directory) -> None:

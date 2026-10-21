@@ -220,7 +220,8 @@ HTTP, from the folder with your `.env` (or one below it):
 gentifi-mcp --profiles <folder> --telegram --transport streamable-http
 ```
 
-It listens on `http://127.0.0.1:8000/mcp`, on this machine only. Then point agents
+It listens on `http://127.0.0.1:8000/mcp`, on this machine only (`--port` to use
+another port, and change the address below to match). Then point agents
 at that one server. Don't put `--telegram` in `claude_desktop_config.json`:
 Claude Desktop starts each local server more than once (once for chats, once for
 its local tool bridge), which gives two bots that clash over Telegram ("Conflict:
