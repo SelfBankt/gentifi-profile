@@ -7,7 +7,8 @@ public: it reaches Telegram by polling, so no port is opened and Caddy is unchan
 | What | Where |
 | --- | --- |
 | Code (root-owned, pulled with a read-only deploy key) | `/srv/gentifi/profile` |
-| Business profiles the bot serves | `/srv/gentifi/profiles` |
+| Business profiles the bot serves | `/srv/gentifi/profiles`, and `gentifi-profile.json` in each toolkit business folder |
+| Secret the toolkit's host uses to hand orders to the bot | `/var/lib/gentifi-bot/handoff-secret` (made on first start) |
 | Bot token and Nostr master key (root and `gentifi` only) | `/etc/gentifi-bot/.env` |
 | Database: owner links, invites, encrypted Nostr keys | `/var/lib/gentifi-bot/relay.db` |
 | Nightly database backups (14 days) | `/srv/gentifi/backups/bot-*.db` |

@@ -10,7 +10,8 @@ WorkingDirectory=/srv/gentifi/profile
 # TELEGRAM_BOT_TOKEN and GENTIFI_NOSTR_MASTER_KEY (root:gentifi, 640)
 EnvironmentFile=/etc/gentifi-bot/.env
 Environment=GENTIFI_RELAY_DB=/var/lib/gentifi-bot/relay.db
-ExecStart=/srv/gentifi/profile/.venv/bin/gentifi-mcp --profiles /srv/gentifi/profiles --telegram --transport streamable-http --port 8765
+# --profiles twice: Gentifi's own folder, and the profiles the toolkit's host writes for each business
+ExecStart=/srv/gentifi/profile/.venv/bin/gentifi-mcp --profiles /srv/gentifi/profiles --profiles /srv/gentifi/businesses --telegram --transport streamable-http --port 8765 --answer-minutes 120
 Restart=on-failure
 RestartSec=5
 StateDirectory=gentifi-bot

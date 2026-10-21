@@ -117,8 +117,11 @@ class OwnerRelay:
             print(f"gentifi-relay: error handling {kind}: {exc!r}", file=sys.stderr)
 
     def tick(self) -> None:
-        """Periodic work: expire unanswered requests, check Lightning invoices, show edited listings."""
+        """Periodic work: expire unanswered requests, check Lightning invoices, show edited listings,
+        pick up profile files the toolkit's host has rewritten."""
         self.book.expire_overdue()
+        with self.book.lock:
+            self.book.directory.refresh()
         for business_id in self.links.take_review_requests():
             self._reviewed(business_id)
         for p in self.links.awaiting_verification():
@@ -192,7 +195,8 @@ class OwnerRelay:
             extra.append(f"{customer['party_size']} people")
         lines.append(" · ".join(extra))
         if customer.get("name"):
-            lines.append(f"Customer: {customer['name']}")
+            lines.append("Customer: " + ", ".join(x for x in [customer["name"], customer.get("phone"),
+                                                              customer.get("email")] if x))
         if req.get("notes"):
             lines.append(f"Note: {req['notes']}")
         return "\n".join(lines)

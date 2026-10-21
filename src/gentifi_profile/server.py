@@ -25,12 +25,15 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.mcpserver import MCPServer
 
 from .freshness import parse_time, utc_now
 from .store import Directory, RequestBook
+
+if TYPE_CHECKING:
+    from .relay.handoff import Handoff
 
 INSTRUCTIONS = """\
 This server gives access to independent local businesses that publish a Gentifi
@@ -109,8 +112,9 @@ def build_server(directory: Directory, demo: bool = False, book: RequestBook | N
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="gentifi-mcp", description="Reference MCP server for Gentifi Business Profiles.")
-    parser.add_argument("--profiles", type=Path, default=Path(os.environ.get("GENTIFI_PROFILES", "profiles")),
-                        help="folder of profile JSON files (default: $GENTIFI_PROFILES or ./profiles)")
+    parser.add_argument("--profiles", type=Path, action="append",
+                        help="folder of profile JSON files, also read from <folder>/*/gentifi-profile.json; "
+                             "repeat for more (default: $GENTIFI_PROFILES or ./profiles)")
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     parser.add_argument("--port", type=int, default=int(os.environ.get("GENTIFI_PORT", 8000)),
                         help="port for --transport streamable-http, on 127.0.0.1 (default: $GENTIFI_PORT or 8000)")
@@ -119,6 +123,9 @@ def main(argv: list[str] | None = None) -> None:
                         help="freeze the clock at this ISO 8601 time (for demos and tests)")
     parser.add_argument("--telegram", action="store_true",
                         help="send pending requests to owners on Telegram (needs TELEGRAM_BOT_TOKEN, e.g. in .env)")
+    parser.add_argument("--answer-minutes", type=int, default=120,
+                        help="with --telegram: the longest an owner has to answer before a request expires "
+                             "(default 120; a profile may ask for less)")
     parser.add_argument("--nostr-relay", action="append", default=[], metavar="URL",
                         help="publish every business to this Nostr relay, and again when its listing changes "
                              "(repeat for more; needs GENTIFI_NOSTR_MASTER_KEY, see gentifi-nostr init)")
@@ -128,14 +135,20 @@ def main(argv: list[str] | None = None) -> None:
 
     fixed: datetime | None = parse_time(args.now) if args.now else None
     clock = (lambda: fixed) if fixed else utc_now
-    directory = Directory.from_folder(args.profiles, clock=clock)
+    directory = Directory.from_folder(args.profiles or [Path(os.environ.get("GENTIFI_PROFILES", "profiles"))],
+                                      clock=clock)
     book = RequestBook(directory)
     hide_onboarding(directory)
+    handoff = None
     if args.telegram:
-        start_telegram_relay(book)
+        book.max_sla_minutes = args.answer_minutes
+        handoff = start_telegram_relay(book)
     if args.nostr_relay:
         start_nostr_publisher(book, args.nostr_relay, args.nostr_allow_public)
     server = build_server(directory, demo=args.demo, book=book)
+    if handoff and args.transport == "streamable-http":
+        from .relay.handoff import add_routes
+        add_routes(server, handoff)
     if args.transport == "streamable-http":
         server.run(args.transport, port=args.port)
     else:
@@ -152,9 +165,11 @@ def hide_onboarding(directory: Directory) -> None:
         hide(directory, Links(db_path()))
 
 
-def start_telegram_relay(book: RequestBook) -> None:
+def start_telegram_relay(book: RequestBook) -> Handoff:
+    """Start the owner relay; returns the hand-off the toolkit's confirmation page uses."""
     from .relay import Links, OwnerRelay
     from .relay.cli import db_path, telegram_channel
+    from .relay.handoff import Handoff, load_secret, secret_file
     from .relay.telegram import TelegramError
 
     try:
@@ -162,10 +177,12 @@ def start_telegram_relay(book: RequestBook) -> None:
         username = channel.check()
     except TelegramError as exc:
         sys.exit(f"gentifi-mcp: can't start the Telegram relay: {exc}")
-    relay = OwnerRelay(book, channel, Links(db_path()), bot_username=username)
+    links = Links(db_path())
+    relay = OwnerRelay(book, channel, links, bot_username=username)
     threading.Thread(target=relay.run, name="gentifi-relay", daemon=True).start()
     # stderr only: with the stdio transport, stdout carries MCP messages
     print(f"gentifi-mcp: owner relay running as @{username}", file=sys.stderr)
+    return Handoff(book, links, load_secret(secret_file(db_path())))
 
 
 def start_nostr_publisher(book: RequestBook, relays: list[str], allow_public: bool) -> None:

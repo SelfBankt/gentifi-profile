@@ -48,7 +48,9 @@ class Directory:
         # Businesses still being onboarded: invisible to agents (as if they didn't exist)
         # and not published, until the owner checks the listing and goes live.
         self.drafts: set[str] = set()
-        self.folder: Path | None = None
+        # Folders the profiles came from, and when each file was last read (see refresh)
+        self.folders: list[Path] = []
+        self._read: dict[Path, float] = {}
         # Called with a business id whenever its listing changes (e.g. to republish it).
         # Keep them quick: they can run while the RequestBook is locked.
         self.listeners: list[Callable[[str], None]] = []
@@ -56,16 +58,40 @@ class Directory:
             self.add(p)
 
     @classmethod
-    def from_folder(cls, folder: Path, clock: Callable[[], datetime] = utc_now) -> "Directory":
+    def from_folder(cls, folder: Path | list[Path], clock: Callable[[], datetime] = utc_now) -> "Directory":
+        """Profiles from each folder: its *.json files, and */gentifi-profile.json (the file
+        the toolkit's host writes into each hosted business's folder)."""
         directory = cls(clock=clock)
-        directory.folder = Path(folder)
-        for path in sorted(Path(folder).glob("*.json")):
+        directory.folders = [Path(f) for f in (folder if isinstance(folder, list) else [folder])]
+        directory.refresh()
+        return directory
+
+    def _files(self) -> list[Path]:
+        return [path for folder in self.folders
+                for path in [*sorted(folder.glob("*.json")), *sorted(folder.glob("*/gentifi-profile.json"))]]
+
+    def refresh(self) -> list[str]:
+        """Load profile files that are new or changed since they were last read, and say so
+        to the listeners. In-memory changes to those businesses (bookings, sold out) give
+        way to the file. Returns the business ids loaded."""
+        loaded = []
+        for path in self._files():
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if self._read.get(path) == mtime:
+                continue
+            self._read[path] = mtime
             try:
                 doc = json.loads(path.read_text("utf-8"))
-                directory.add(doc)
-            except (ValueError, json.JSONDecodeError) as exc:
-                print(f"gentifi: skipping {path.name}: {exc}", file=sys.stderr)
-        return directory
+                self.add(doc)
+            except (OSError, ValueError, KeyError, TypeError) as exc:  # one bad file never stops the others
+                print(f"gentifi: skipping {path}: {exc}", file=sys.stderr)
+                continue
+            loaded.append(doc["business"]["id"])
+            self.changed(doc["business"]["id"])
+        return loaded
 
     def add(self, profile: dict[str, Any]) -> None:
         kind, issues = check_document(profile, "profile", now=self.clock())
@@ -78,18 +104,19 @@ class Directory:
     def reload(self, business_id: str) -> dict[str, Any]:
         """Read the business's profile from the folder again, after Gentifi has edited it.
         Bookings made since start-up change availability in memory and are lost from it."""
-        if self.folder is None:
+        if not self.folders:
             raise KeyError(f"no profiles folder to reload '{business_id}' from")
-        for path in sorted(self.folder.glob("*.json")):
+        for path in self._files():
             try:
                 doc = json.loads(path.read_text("utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if doc.get("business", {}).get("id") == business_id:
+            if isinstance(doc, dict) and doc.get("business", {}).get("id") == business_id:
                 self.add(doc)
+                self._read[path] = path.stat().st_mtime
                 self.changed(business_id)
                 return self.profiles[business_id]
-        raise KeyError(f"no profile for '{business_id}' in {self.folder}")
+        raise KeyError(f"no profile for '{business_id}' in {', '.join(map(str, self.folders))}")
 
     def go_live(self, business_id: str) -> None:
         self.drafts.discard(business_id)
@@ -209,6 +236,9 @@ class RequestBook:
         # pending, confirmed, declined, expired, cancelled, payment. Keep listeners quick
         # (queue the work): they run while the book is locked.
         self.listeners: list[Callable[[str, str], None]] = []
+        # The longest a business may take to confirm, whatever its profile says (the owner
+        # relay sets it, so customers aren't left waiting a day for a phone tap)
+        self.max_sla_minutes: int | None = None
 
     @property
     def now(self) -> datetime:
@@ -284,6 +314,9 @@ class RequestBook:
             sla = max(sla, cap.get("confirmation_sla_minutes", DEFAULT_SLA_MINUTES))
 
         # Random, not derived from request_id: whoever holds a reference can cancel the booking
+        sla = sla or DEFAULT_SLA_MINUTES
+        if self.max_sla_minutes:
+            sla = min(sla, self.max_sla_minutes)
         reference = "GTF-" + secrets.token_hex(4).upper()
         while reference in self.bookings:
             reference = "GTF-" + secrets.token_hex(4).upper()
@@ -301,8 +334,8 @@ class RequestBook:
                                         message=f"Confirmed with {name}.")
         else:
             receipt = self._receipt(rid, "pending_confirmation", reference=reference, total=total,
-                                    confirm_by=_iso(self.now + timedelta(minutes=sla or DEFAULT_SLA_MINUTES)),
-                                    message=f"Sent to {name}. They will confirm within {sla or DEFAULT_SLA_MINUTES} minutes.")
+                                    confirm_by=_iso(self.now + timedelta(minutes=sla)),
+                                    message=f"Sent to {name}. They will confirm within {sla} minutes.")
         self.bookings[reference] = {"request": request, "receipt": receipt, "business_id": profile["business"]["id"]}
         if receipt["status"] == "pending_confirmation":
             self._emit("pending", reference)
