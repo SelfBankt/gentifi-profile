@@ -44,7 +44,8 @@ heading towards; the plan is for the toolkit to publish each business as a profi
     `--telegram` runs the owner relay in a background thread on the same RequestBook
   - `relay/` — owner confirmation relay. `channel.py` (OwnerChannel interface +
     MockChannel), `telegram.py` (Bot API, long polling, stdlib only), `links.py`
-    (SQLite: owner chat links, invites, prompt messages), `payments.py` (LNURL-pay
+    (SQLite: owner chat links, invites, prompt messages), `handoff.py` (orders from the
+    toolkit's confirmation page, over 127.0.0.1 with a shared secret), `payments.py` (LNURL-pay
     invoice from the merchant's own Lightning address, LUD-21 verify, BOLT 11 amount
     check), `relay.py` (prompts, buttons, commands, expiry), `cli.py` (`gentifi-relay`)
   - `nostr/` — publishing to Nostr. `events.py` (NIP-01 ids, BIP-340 signing via coincurve,

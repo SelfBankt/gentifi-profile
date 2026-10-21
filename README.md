@@ -210,6 +210,19 @@ yourself: that chat is then told when an owner connects, asks for a change or go
 `gentifi-relay review` also works for a live business after you edit its profile: the
 bot reloads it (bookings made since start-up are reset) and tells the owner.
 
+### Orders from the toolkit's confirmation page
+
+On the Gentifi host, customers confirm orders on the toolkit's page at
+`mcp.gentifi.com/o/<link>`. When the business's owner is linked here (and live, not
+paused), the host hands the confirmed order to this server instead of the business's
+email: the owner answers in Telegram and the page shows the customer the answer. The
+host calls three routes on `127.0.0.1` with a shared secret
+(`src/gentifi_profile/relay/handoff.py`); they exist only with `--telegram` and the HTTP
+transport. Owners get `--answer-minutes` (default 120) to answer, whatever a profile
+asks for. With `--profiles <toolkit businesses folder>` the server also reads the
+`gentifi-profile.json` the host writes for each business, and picks up changes within
+30 seconds.
+
 ### Run the bot on its own
 
 On the Gentifi VPS it runs as the `gentifi-bot` service: see [docs/vps.md](docs/vps.md).
