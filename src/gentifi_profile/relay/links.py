@@ -23,7 +23,11 @@ CREATE TABLE IF NOT EXISTS merchants (
     owner_name        TEXT,
     lightning_address TEXT,
     payment_link      TEXT,
-    linked_at         TEXT
+    linked_at         TEXT,
+    status            TEXT NOT NULL DEFAULT 'live',  -- 'onboarding' until the owner checks the listing
+    review_requested  INTEGER NOT NULL DEFAULT 0,    -- Gentifi edited the profile: reload and show it again
+    change_request    TEXT,                          -- the owner's last "something's wrong" message
+    change_requested_at TEXT
 );
 CREATE TABLE IF NOT EXISTS invites (
     code        TEXT PRIMARY KEY,
@@ -42,6 +46,16 @@ CREATE TABLE IF NOT EXISTS prompts (
 """
 
 
+# Columns added after the first release, for databases made before them
+MIGRATIONS = {
+    "status": "ALTER TABLE merchants ADD COLUMN status TEXT NOT NULL DEFAULT 'live'",
+    "review_requested": "ALTER TABLE merchants ADD COLUMN review_requested INTEGER NOT NULL DEFAULT 0",
+    "change_request": "ALTER TABLE merchants ADD COLUMN change_request TEXT",
+    "change_requested_at": "ALTER TABLE merchants ADD COLUMN change_requested_at TEXT",
+}
+MERCHANT_COLUMNS = "business_id, chat_id, owner_name, lightning_address, payment_link, status, change_request"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -53,6 +67,12 @@ class Merchant:
     owner_name: str | None
     lightning_address: str | None
     payment_link: str | None
+    status: str = "live"
+    change_request: str | None = None
+
+    @property
+    def onboarding(self) -> bool:
+        return self.status == "onboarding"
 
 
 @dataclass
@@ -71,6 +91,11 @@ class Links:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript(SCHEMA)
+            have = {row[1] for row in self._db.execute("PRAGMA table_info(merchants)")}
+            for column, sql in MIGRATIONS.items():
+                if column not in have:
+                    self._db.execute(sql)
+            self._db.commit()
 
     def _q(self, sql: str, *args: object) -> list[tuple]:
         with self._lock, self._db:
@@ -89,27 +114,54 @@ class Links:
                     payment_link or None, business_id)
 
     def merchant(self, business_id: str) -> Merchant | None:
-        rows = self._q("SELECT business_id, chat_id, owner_name, lightning_address, payment_link "
-                       "FROM merchants WHERE business_id = ?", business_id)
+        rows = self._q(f"SELECT {MERCHANT_COLUMNS} FROM merchants WHERE business_id = ?", business_id)
         return Merchant(*rows[0]) if rows else None
 
     def by_chat(self, chat_id: str) -> Merchant | None:
-        rows = self._q("SELECT business_id, chat_id, owner_name, lightning_address, payment_link "
-                       "FROM merchants WHERE chat_id = ?", chat_id)
+        rows = self._q(f"SELECT {MERCHANT_COLUMNS} FROM merchants WHERE chat_id = ?", chat_id)
         return Merchant(*rows[0]) if rows else None
 
     def all(self) -> list[Merchant]:
-        return [Merchant(*r) for r in self._q("SELECT business_id, chat_id, owner_name, lightning_address, "
-                                              "payment_link FROM merchants ORDER BY business_id")]
+        return [Merchant(*r) for r in self._q(f"SELECT {MERCHANT_COLUMNS} FROM merchants ORDER BY business_id")]
+
+    # ------------------------------------------------------------ onboarding
+
+    def onboarding(self) -> list[str]:
+        """Businesses whose owner hasn't checked the listing and gone live yet."""
+        return [r[0] for r in self._q("SELECT business_id FROM merchants WHERE status = 'onboarding'")]
+
+    def set_status(self, business_id: str, status: str) -> None:
+        self.configure(business_id)
+        self._q("UPDATE merchants SET status = ? WHERE business_id = ?", status, business_id)
+
+    def request_review(self, business_id: str) -> None:
+        """Ask the running bot to reload the profile and show it to the owner again. Clears the
+        owner's change request, which the edit is meant to have dealt with."""
+        self.configure(business_id)
+        self._q("UPDATE merchants SET review_requested = 1, change_request = NULL WHERE business_id = ?", business_id)
+
+    def take_review_requests(self) -> list[str]:
+        with self._lock, self._db:
+            ids = [r[0] for r in self._db.execute("SELECT business_id FROM merchants WHERE review_requested = 1")]
+            self._db.execute("UPDATE merchants SET review_requested = 0 WHERE review_requested = 1")
+        return ids
+
+    def save_change_request(self, business_id: str, text: str) -> None:
+        self._q("UPDATE merchants SET change_request = ?, change_requested_at = ? WHERE business_id = ?",
+                text, _now(), business_id)
 
     # ------------------------------------------------------------ invites
 
-    def invite(self, business_id: str) -> str:
-        """A one-time code the owner uses with /start to link their chat to the business."""
+    def invite(self, business_id: str, onboarding: bool = False) -> str:
+        """A one-time code the owner uses with /start to link their chat to the business.
+        With onboarding, the business stays hidden until the owner checks it and goes live."""
         # 12 letters and digits: fits Telegram's start parameter, and no _ or - for chat
         # apps to treat as formatting and drop when the link is shown or copied
         code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(12))
         self.configure(business_id)
+        if onboarding:
+            self.set_status(business_id, "onboarding")
+            self.request_review(business_id)  # a running bot loads the profile and hides it now
         self._q("INSERT INTO invites (code, business_id, created_at) VALUES (?, ?, ?)",
                 code, business_id, _now())
         return code

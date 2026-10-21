@@ -54,6 +54,8 @@ class Publisher:
 
     def _run(self) -> None:
         while (business_id := self._queue.get()) is not None:
+            if business_id in self.directory.drafts:
+                continue  # not live yet: nothing to publish
             try:
                 results = self.publish(business_id)
             except Exception as exc:  # keep publishing the others

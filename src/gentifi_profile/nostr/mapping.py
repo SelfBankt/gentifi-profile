@@ -71,7 +71,7 @@ def _metadata(business: dict[str, Any]) -> dict[str, Any]:
 
 
 def _about(business: dict[str, Any]) -> str:
-    parts = [business.get("description", "").strip(), _place(business), _hours(business)]
+    parts = [business.get("description", "").strip(), _place(business), hours_text(business)]
     return "\n\n".join(p for p in parts if p)
 
 
@@ -256,7 +256,7 @@ def _place(business: dict[str, Any]) -> str:
     return ", ".join(p for p in [address.get("locality"), address.get("region")] if p)
 
 
-def _hours(business: dict[str, Any]) -> str:
+def hours_text(business: dict[str, Any]) -> str:
     rows = business.get("opening_hours") or []
     parts = []
     for row in rows:

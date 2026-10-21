@@ -320,6 +320,121 @@ def test_unlinked_business_gets_no_message_and_the_request_expires():
     assert book.bookings[reference]["receipt"]["status"] == "expired"
 
 
+# ------------------------------------------------------------ onboarding
+
+
+@pytest.fixture
+def onboarding(tmp_path):
+    folder = tmp_path / "profiles"
+    folder.mkdir()
+    for path in EXAMPLES.glob("*.json"):
+        (folder / path.name).write_text(path.read_text())
+    book = RequestBook(Directory.from_folder(folder, clock=Clock()))
+    links, chat = Links(), MockChannel()
+    code = links.invite(FARM, onboarding=True)
+    relay = OwnerRelay(book, chat, links, http=Wallet())
+    return folder, book, links, chat, relay, code
+
+
+def press_last(chat, relay, label):
+    chat.press(chat.last(OWNER).message_id, label)
+    relay.step()
+
+
+def test_onboarding_shop_is_hidden_until_the_owner_goes_live(onboarding):
+    _, book, links, chat, relay, code = onboarding
+    changed = []
+    book.directory.listeners.append(changed.append)
+    assert all(b["business_id"] != FARM for b in book.directory.find())
+    with pytest.raises(KeyError):
+        book.directory.info(FARM)
+    assert book.submit(order())["status"] == "failed", "agents can't reach a shop that isn't live"
+
+    chat.type(OWNER, f"/start {code}", name="Jo")
+    relay.step()
+    card = chat.last(OWNER)
+    assert card.text.startswith("Hi Jo, I'll get Hollowbrook Farm Shop found by people's AI assistants.")
+    assert "Hollowbrook Lane, Pucklechurch, BS16 9XX" in card.text
+    assert "Open Thu and Fri 10:00–17:00, Sat 09:00–13:00." in card.text
+    assert "4 items, including:\n• Free-range eggs: £3.50 per dozen\n• Seasonal veg box: £18.00\n" in card.text
+    assert "Customers can order for collection or delivery." in card.text
+    assert chat.labels(card.message_id) == ["Looks right", "Something's wrong"]
+
+    chat.type(OWNER, "/soldout")
+    relay.step()
+    assert chat.last(OWNER).text.startswith("You're not live yet.")
+
+    checked = chat.last(OWNER).message_id
+    press_last(chat, relay, "Looks right")
+    assert chat.labels(checked) == [], "the checked card loses its buttons"
+    assert chat.labels(chat.last(OWNER).message_id) == ["Add Lightning address", "Add payment link", "Go live"]
+
+    press_last(chat, relay, "Add Lightning address")
+    chat.type(OWNER, "shop@wallet.example")
+    relay.step()
+    assert "Lightning address: shop@wallet.example" in chat.last(OWNER).text
+    press_last(chat, relay, "Add payment link")
+    chat.type(OWNER, "pay me on the day")
+    relay.step()
+    assert "doesn't look like a payment link" in chat.last(OWNER).text
+    chat.type(OWNER, "https://pay.example/hollowbrook")
+    relay.step()
+    merchant = links.merchant(FARM)
+    assert (merchant.lightning_address, merchant.payment_link) == ("shop@wallet.example", "https://pay.example/hollowbrook")
+    assert chat.labels(chat.last(OWNER).message_id) == ["Change Lightning address", "Change payment link", "Go live"]
+
+    press_last(chat, relay, "Go live")
+    assert chat.last(OWNER).text.startswith("You're live.")
+    assert links.merchant(FARM).status == "live" and FARM not in book.directory.drafts
+    assert changed == [FARM], "going live publishes the listing"
+    assert book.submit(order("req_relay_0002"))["status"] == "pending_confirmation"
+    press_last(chat, relay, "See my listing")
+    assert chat.last(OWNER).text.startswith("Hollowbrook Farm Shop\n")
+
+
+def test_something_wrong_goes_to_gentifi_and_the_fixed_listing_comes_back(onboarding):
+    folder, book, links, chat, relay, code = onboarding
+    chat.type(OWNER, f"/start {code}", name="Jo")
+    relay.step()
+    press_last(chat, relay, "Something's wrong")
+    chat.type(OWNER, "Eggs are £3.80 a dozen now")
+    relay.step()
+    assert chat.last(OWNER).text.startswith("Thanks. Gentifi will make the change")
+    assert links.merchant(FARM).change_request == "Eggs are £3.80 a dozen now"
+
+    profile = json.loads((folder / "farm-shop.json").read_text())
+    profile["offerings"][0]["price"]["amount"]["amount_minor"] = 380
+    (folder / "farm-shop.json").write_text(json.dumps(profile))
+    links.request_review(FARM)
+    relay.tick()
+    card = chat.last(OWNER)
+    assert card.text.startswith("Gentifi has updated your listing. Please check it again:")
+    assert "Free-range eggs: £3.80 per dozen" in card.text
+    assert links.merchant(FARM).change_request is None
+    assert FARM in book.directory.drafts, "still hidden until the owner goes live"
+
+    press_last(chat, relay, "Looks right")
+    press_last(chat, relay, "Add Lightning address")
+    chat.type(OWNER, "nobody@nowhere.example")
+    relay.step()
+    assert chat.last(OWNER).text.startswith("That address didn't work")
+    assert links.merchant(FARM).lightning_address is None
+
+
+def test_links_from_before_onboarding_are_upgraded_and_stay_live(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "relay.db"
+    old = sqlite3.connect(db)
+    old.executescript("CREATE TABLE merchants (business_id TEXT PRIMARY KEY, chat_id TEXT UNIQUE, owner_name TEXT, "
+                      "lightning_address TEXT, payment_link TEXT, linked_at TEXT);"
+                      "INSERT INTO merchants (business_id, chat_id) VALUES ('gtf_hollowbrookfarm', '1001');")
+    old.commit()
+    old.close()
+    merchant = Links(db).merchant(FARM)
+    assert merchant.chat_id == OWNER and merchant.status == "live" and not merchant.onboarding
+
+
 # ------------------------------------------------------------ payments
 
 

@@ -7,6 +7,11 @@ is waiting for.
             -> Decline          -> declined (Sold out also marks those items sold out)
             -> no answer        -> expired at confirm_by
 
+Onboarding (invite --onboard): the business stays hidden from agents while the owner
+checks a summary of the listing Gentifi set up, says how customers can pay, and taps
+Go live. "Something's wrong" sends their note to Gentifi; `gentifi-relay review`
+reloads the edited profile and shows it to them again.
+
 Silence is safe: nothing is confirmed to the customer until the owner taps Accept.
 Gentifi never holds money: payment requests come from the business's own wallet
 or payment link (see payments.py).
@@ -20,17 +25,21 @@ import threading
 import time
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from ..freshness import parse_time
+from ..nostr.mapping import hours_text
 from ..store import RequestBook
 from .channel import Button, Incoming, Keyboard, OwnerChannel
 from .links import Links, Merchant
-from .payments import Http, PaymentError, http_get, is_settled, request_invoice
+from .payments import Http, PaymentError, check_address, http_get, is_settled, request_invoice
 
 TICK_SECONDS = 30
 SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$"}
 STOCK_VERBS = {"so", "si", "sd"}  # sold out, back in stock, done: buttons from /soldout and /instock
+SETUP_VERB = "ob"                  # onboarding buttons: ob:ok, ob:edit, ob:ln, ob:link, ob:live, ob:listing, ob:help
+LIVE_COMMANDS = {"/orders", "/soldout", "/instock", "/pause", "/resume"}  # wait until the business is live
 HELP = """\
 Gentifi sends you orders and bookings from customers' AI assistants. Tap a button to answer.
 
@@ -43,6 +52,20 @@ Gentifi sends you orders and bookings from customers' AI assistants. Tap a butto
 /help – this message
 
 Nothing is confirmed to a customer until you tap Accept. If you don't answer in time, the request expires and the customer is told."""
+
+
+def hide_onboarding(directory: Any, links: Links) -> None:
+    """Keep businesses still being onboarded out of sight until their owner goes live."""
+    directory.drafts.update(links.onboarding())
+
+
+def price_text(offering: dict[str, Any]) -> str:
+    price = offering.get("price", {})
+    if price.get("type") not in {"fixed", "from"} or not price.get("amount"):
+        return "price on request"
+    per = price.get("per")
+    return (("from " if price["type"] == "from" else "") + money(price["amount"]) +
+            (f" per {per}" if per and per not in {"item", "each"} else ""))
 
 
 def money(m: dict[str, Any] | None) -> str:
@@ -63,9 +86,11 @@ class OwnerRelay:
         self.bot_username = bot_username
         self.events: queue.Queue[tuple[str, Any, Any]] = queue.Queue()
         self.awaiting_time: dict[str, str] = {}   # chat_id -> reference waiting for a typed time
+        self.awaiting_setup: dict[str, str] = {}  # chat_id -> "change", "lightning" or "link" while onboarding
         self._acting: set[str] = set()            # references whose events the relay itself caused
         self._stop = threading.Event()
         book.listeners.append(self._on_event)
+        hide_onboarding(book.directory, links)
 
     # ------------------------------------------------------------ plumbing
 
@@ -91,8 +116,10 @@ class OwnerRelay:
             print(f"gentifi-relay: error handling {kind}: {exc!r}", file=sys.stderr)
 
     def tick(self) -> None:
-        """Periodic work: expire unanswered requests, check Lightning invoices."""
+        """Periodic work: expire unanswered requests, check Lightning invoices, show edited listings."""
         self.book.expire_overdue()
+        for business_id in self.links.take_review_requests():
+            self._reviewed(business_id)
         for p in self.links.awaiting_verification():
             try:
                 if is_settled(p.verify_url, self.http):
@@ -268,6 +295,9 @@ class OwnerRelay:
 
     def _button(self, inc: Incoming) -> None:
         verb, _, rest = inc.value.partition(":")
+        if verb == SETUP_VERB:
+            self._setup_button(inc, rest)
+            return
         if verb in STOCK_VERBS:
             self._stock_button(inc, verb, rest)
             return
@@ -413,6 +443,14 @@ class OwnerRelay:
             self.channel.send(inc.chat_id, "This bot is for businesses on Gentifi. "
                                            "Open the invite link Gentifi gave you to connect your business.")
             return
+        if text.startswith("/"):
+            self.awaiting_setup.pop(inc.chat_id, None)
+        elif inc.chat_id in self.awaiting_setup:
+            self._setup_text(inc, merchant, text)
+            return
+        if merchant.onboarding and command in LIVE_COMMANDS:
+            self._send_review(inc.chat_id, merchant.business_id, "You're not live yet. First, check your listing:")
+            return
         if inc.chat_id in self.awaiting_time and not text.startswith("/"):
             reference = self.awaiting_time.pop(inc.chat_id)
             try:
@@ -443,6 +481,9 @@ class OwnerRelay:
     def _start(self, inc: Incoming, code: str) -> None:
         if code:
             business_id = self.links.redeem(code, inc.chat_id, inc.name)
+            if business_id and self.links.merchant(business_id).onboarding:
+                self._welcome(inc, business_id)
+                return
             if business_id:
                 name = self._profile(business_id)["business"]["name"] if business_id in self.book.directory.profiles else business_id
                 self.channel.send(inc.chat_id, f"Connected to {name}. When a customer's AI assistant sends an order "
@@ -452,7 +493,10 @@ class OwnerRelay:
                 self.channel.send(inc.chat_id, "That invite link has expired or was already used. "
                                                "Ask Gentifi for a new one.")
                 return
-        if self.links.by_chat(inc.chat_id):
+        merchant = self.links.by_chat(inc.chat_id)
+        if merchant and merchant.onboarding:
+            self._send_review(inc.chat_id, merchant.business_id, "Please check your listing:")
+        elif merchant:
             self.channel.send(inc.chat_id, HELP)
         else:
             self.channel.send(inc.chat_id, "Hi! This bot is for businesses on Gentifi. "
@@ -477,9 +521,7 @@ class OwnerRelay:
         lines = [profile["business"]["name"] +
                  (" (paused)" if merchant.business_id in self.book.directory.paused else "")]
         for o in profile["offerings"]:
-            price = o.get("price", {})
-            p = money(price.get("amount")) if price.get("type") == "fixed" else "price on request"
-            lines.append(f"• {o['name']}: {p}" + (f" ({status[o['id']]})" if o["id"] in status else ""))
+            lines.append(f"• {o['name']}: {price_text(o)}" + (f" ({status[o['id']]})" if o["id"] in status else ""))
         pay = []
         if merchant.lightning_address:
             pay.append(f"Lightning to {merchant.lightning_address}")
@@ -530,3 +572,155 @@ class OwnerRelay:
         text, buttons = self._stock_menu(merchant.business_id, verb == "so")
         self.channel.edit(inc.chat_id, inc.message_id, f"{note}\n\n{text}", buttons)
         self.channel.ack(inc, note.split(".")[0])
+
+    # ------------------------------------------------------------ onboarding
+
+    def _welcome(self, inc: Incoming, business_id: str) -> None:
+        if business_id not in self.book.directory.profiles:
+            self.channel.send(inc.chat_id, "Connected. Gentifi is still setting up your listing; "
+                                           "I'll send it here for you to check when it's ready.")
+            return
+        name = self._profile(business_id)["business"]["name"]
+        self._send_review(inc.chat_id, business_id,
+                          f"Hi{' ' + inc.name if inc.name else ''}, I'll get {name} found by people's AI assistants. "
+                          "Gentifi has set up your listing. Please check it:")
+
+    def _review_text(self, business_id: str) -> str:
+        profile = self._profile(business_id)
+        b = profile["business"]
+        address = b["location"].get("address", {})
+        lines = [b["name"]]
+        place = ", ".join(x for x in [address.get("line1"), address.get("locality"), address.get("postal_code")] if x)
+        if place:
+            lines.append(place)
+        if hours_text(b):
+            lines.append(hours_text(b))
+        offerings = profile["offerings"]
+        lines.append(f"\n{len(offerings)} item{'s' if len(offerings) != 1 else ''}" +
+                     (", including:" if len(offerings) > 3 else ":"))
+        lines += [f"• {o['name']}: {price_text(o)}" for o in offerings[:3]]
+        ways = {f for o in offerings for f in o.get("fulfilment", [])}
+        how = [w for w, label in [("collection", "collection"), ("delivery", "delivery")] if w in ways]
+        if how:
+            lines.append("\nCustomers can order for " + " or ".join(how) + ".")
+        return "\n".join(lines)
+
+    def _send_review(self, chat_id: str, business_id: str, intro: str) -> None:
+        if business_id not in self.book.directory.profiles:
+            self.channel.send(chat_id, "Gentifi is still setting up your listing; I'll send it here when it's ready.")
+            return
+        self.channel.send(chat_id, f"{intro}\n\n{self._review_text(business_id)}",
+                          [[Button("Looks right", f"{SETUP_VERB}:ok")],
+                           [Button("Something's wrong", f"{SETUP_VERB}:edit")]])
+
+    def _send_payment_step(self, chat_id: str, merchant: Merchant) -> None:
+        lines = ["How do customers pay you?",
+                 "They can always pay you in person when they collect or you deliver. You can also let them pay "
+                 "ahead, straight to you (Gentifi never handles the money):",
+                 f"• Lightning address: {merchant.lightning_address or 'not set'}",
+                 f"• Payment link: {merchant.payment_link or 'not set'}"]
+        self.channel.send(chat_id, "\n\n".join(lines[:2]) + "\n" + "\n".join(lines[2:]),
+                          [[Button(("Change" if merchant.lightning_address else "Add") + " Lightning address",
+                                   f"{SETUP_VERB}:ln")],
+                           [Button(("Change" if merchant.payment_link else "Add") + " payment link",
+                                   f"{SETUP_VERB}:link")],
+                           [Button("Go live", f"{SETUP_VERB}:live")]])
+
+    def _setup_button(self, inc: Incoming, arg: str) -> None:
+        merchant = self.links.by_chat(inc.chat_id)
+        if merchant is None:
+            self.channel.ack(inc, "This isn't one of your businesses.")
+            return
+        self.channel.ack(inc)
+        if arg == "listing":
+            self._listing(inc, merchant)
+            return
+        if arg == "help":
+            self.channel.send(inc.chat_id, HELP)
+            return
+        if not merchant.onboarding:
+            self.channel.edit(inc.chat_id, inc.message_id, "You're already live. Send /listing to see what "
+                                                           "customers' assistants see.")
+            return
+        if arg in {"ok", "edit"} and inc.message_id:
+            self.channel.edit(inc.chat_id, inc.message_id, self._review_text(merchant.business_id), None)
+        if arg == "ok":
+            self._send_payment_step(inc.chat_id, merchant)
+        elif arg == "edit":
+            self.awaiting_setup[inc.chat_id] = "change"
+            self.channel.send(inc.chat_id, "What needs changing? Tell me in one message, for example "
+                                           "\"eggs are £3.80 now and we're closed on Thursdays\".")
+        elif arg == "ln":
+            self.awaiting_setup[inc.chat_id] = "lightning"
+            self.channel.send(inc.chat_id, "Send me your Lightning address. It looks like an email address, "
+                                           "for example shop@strike.me.")
+        elif arg == "link":
+            self.awaiting_setup[inc.chat_id] = "link"
+            self.channel.send(inc.chat_id, "Send me your payment link from SumUp, Square, Stripe or similar. "
+                                           "It starts with https://")
+        elif arg == "live":
+            self._go_live(inc, merchant)
+
+    def _setup_text(self, inc: Incoming, merchant: Merchant, text: str) -> None:
+        step = self.awaiting_setup[inc.chat_id]
+        if step == "change":
+            self.awaiting_setup.pop(inc.chat_id)
+            self.links.save_change_request(merchant.business_id, text)
+            print(f"gentifi-relay: {merchant.business_id} asked for a change: {text}", file=sys.stderr)
+            self.channel.send(inc.chat_id, "Thanks. Gentifi will make the change and send you your listing "
+                                           "to check again.")
+            return
+        if step == "lightning":
+            address = text.strip().removeprefix("lightning:")
+            try:
+                check_address(address, self.http)
+            except PaymentError as exc:
+                self.channel.send(inc.chat_id, f"That address didn't work ({exc}). Check it and send it again.")
+                return
+            self.links.configure(merchant.business_id, lightning_address=address)
+        else:
+            link = text.strip()
+            parts = urlsplit(link)
+            if parts.scheme != "https" or not parts.netloc or " " in link:
+                self.channel.send(inc.chat_id, "That doesn't look like a payment link. It should start with "
+                                               "https:// - send it again.")
+                return
+            self.links.configure(merchant.business_id, payment_link=link)
+        self.awaiting_setup.pop(inc.chat_id)
+        self.channel.send(inc.chat_id, "Saved.")
+        self._send_payment_step(inc.chat_id, self.links.merchant(merchant.business_id))
+
+    def _go_live(self, inc: Incoming, merchant: Merchant) -> None:
+        if merchant.business_id not in self.book.directory.profiles:
+            self.channel.send(inc.chat_id, "Your listing isn't ready yet; Gentifi will send it to you to check.")
+            return
+        self.links.set_status(merchant.business_id, "live")
+        with self.book.lock:
+            self.book.directory.go_live(merchant.business_id)
+        if inc.message_id:
+            self.channel.edit(inc.chat_id, inc.message_id, "Payment set up.", None)
+        name = self._profile(merchant.business_id)["business"]["name"]
+        print(f"gentifi-relay: {merchant.business_id} is live", file=sys.stderr)
+        self.channel.send(inc.chat_id, f"You're live. Customers' AI assistants can now find {name}. "
+                                       "When one sends an order, I'll message you here.",
+                          [[Button("See my listing", f"{SETUP_VERB}:listing"), Button("Help", f"{SETUP_VERB}:help")]])
+
+    def _reviewed(self, business_id: str) -> None:
+        """Gentifi asked to show this business's profile again (gentifi-relay review, or a new invite)."""
+        merchant = self.links.merchant(business_id)
+        if merchant is None:
+            return
+        with self.book.lock:
+            if merchant.onboarding:
+                self.book.directory.drafts.add(business_id)  # before the reload announces the change
+            try:
+                self.book.directory.reload(business_id)
+            except (KeyError, ValueError) as exc:
+                print(f"gentifi-relay: couldn't load the profile for {business_id}: {exc.args[0]}", file=sys.stderr)
+                return
+        if not merchant.chat_id:
+            return
+        if merchant.onboarding:
+            self._send_review(merchant.chat_id, business_id, "Gentifi has updated your listing. Please check it again:")
+        else:
+            self.channel.send(merchant.chat_id, "Gentifi has updated your listing. Send /listing to see it.")

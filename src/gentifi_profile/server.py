@@ -128,11 +128,22 @@ def main(argv: list[str] | None = None) -> None:
     clock = (lambda: fixed) if fixed else utc_now
     directory = Directory.from_folder(args.profiles, clock=clock)
     book = RequestBook(directory)
+    hide_onboarding(directory)
     if args.telegram:
         start_telegram_relay(book)
     if args.nostr_relay:
         start_nostr_publisher(book, args.nostr_relay, args.nostr_allow_public)
     build_server(directory, demo=args.demo, book=book).run(args.transport)
+
+
+def hide_onboarding(directory: Directory) -> None:
+    """Businesses whose owner is still checking their listing stay hidden, Telegram or not."""
+    from .relay.cli import db_path
+    from .relay.links import Links
+    from .relay.relay import hide_onboarding as hide
+
+    if db_path().is_file():
+        hide(directory, Links(db_path()))
 
 
 def start_telegram_relay(book: RequestBook) -> None:

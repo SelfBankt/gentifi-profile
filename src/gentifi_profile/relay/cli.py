@@ -2,7 +2,9 @@
 
     gentifi-relay check                                   # is the bot token working?
     gentifi-relay invite gtf_hollowbrookfarm --lightning-address shop@strike.me
-    gentifi-relay merchants                               # who is linked, and how they take payment
+    gentifi-relay invite gtf_newshop --onboard            # hidden until the owner checks it and goes live
+    gentifi-relay review gtf_newshop                      # after editing its profile: show the owner again
+    gentifi-relay merchants                               # who is linked, live or not, and how they take payment
 
 The relay itself runs inside the MCP server: gentifi-mcp --telegram ...
 The bot token is read from TELEGRAM_BOT_TOKEN, or from a .env file in this
@@ -64,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     inv.add_argument("business_id")
     inv.add_argument("--lightning-address", help="the business's own Lightning address, e.g. shop@strike.me")
     inv.add_argument("--payment-link", help="the business's own card payment link (SumUp, Square, Stripe...)")
+    inv.add_argument("--onboard", action="store_true",
+                     help="keep the business hidden until the owner checks the listing and taps Go live")
+    rev = sub.add_parser("review", help="after editing a profile: the running bot reloads it and, while "
+                                        "onboarding, shows it to the owner to check again")
+    rev.add_argument("business_id")
     pay = sub.add_parser("payment", help="change how a business takes payment")
     pay.add_argument("business_id")
     pay.add_argument("--lightning-address", help="Lightning address ('' to remove)")
@@ -81,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                 check_address(args.lightning_address)
             links.configure(args.business_id, args.lightning_address, args.payment_link)
         if args.command == "invite":
-            code = links.invite(args.business_id)
+            code = links.invite(args.business_id, onboarding=args.onboard)
             try:
                 username = telegram_channel().check()
                 print(f"Send this link to the owner of {args.business_id} (works once):\n"
@@ -90,13 +97,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Invite code for {args.business_id}: {code}\n"
                       f"(Couldn't reach the bot to build the link: {exc}. The owner can send "
                       f"'/start {code}' to the bot instead.)")
+        elif args.command == "review":
+            m = links.merchant(args.business_id)
+            if m is None:
+                print(f"gentifi-relay: {args.business_id} has no invite yet; make one with "
+                      "`gentifi-relay invite`", file=sys.stderr)
+                return 1
+            links.request_review(args.business_id)
+            print(f"The running bot will reload {args.business_id} within 30 seconds" +
+                  (" and send the owner their listing to check." if m.onboarding and m.chat_id else "."))
         elif args.command == "payment":
             m = links.merchant(args.business_id)
             print(f"{args.business_id}: Lightning {m.lightning_address or '-'}, link {m.payment_link or '-'}")
         elif args.command == "merchants":
             for m in links.all():
-                print(f"{m.business_id}: {'linked to ' + (m.owner_name or m.chat_id) if m.chat_id else 'not linked'}; "
+                print(f"{m.business_id} ({'onboarding' if m.onboarding else 'live'}): "
+                      f"{'linked to ' + (m.owner_name or m.chat_id) if m.chat_id else 'not linked'}; "
                       f"Lightning {m.lightning_address or '-'}; link {m.payment_link or '-'}")
+                if m.change_request:
+                    print(f"    asked for a change: {m.change_request}")
         return 0
     except (TelegramError, PaymentError) as exc:
         print(f"gentifi-relay: {exc}", file=sys.stderr)
