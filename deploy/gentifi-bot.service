@@ -1,0 +1,24 @@
+[Unit]
+Description=Gentifi owner bot: Telegram relay and reference MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=gentifi
+Group=gentifi
+WorkingDirectory=/srv/gentifi/profile
+# TELEGRAM_BOT_TOKEN and GENTIFI_NOSTR_MASTER_KEY (root:gentifi, 640)
+EnvironmentFile=/etc/gentifi-bot/.env
+Environment=GENTIFI_RELAY_DB=/var/lib/gentifi-bot/relay.db
+ExecStart=/srv/gentifi/profile/.venv/bin/gentifi-mcp --profiles /srv/gentifi/profiles --telegram --transport streamable-http --port 8765
+Restart=on-failure
+RestartSec=5
+StateDirectory=gentifi-bot
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

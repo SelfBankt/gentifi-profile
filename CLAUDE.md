@@ -58,6 +58,8 @@ heading towards; the plan is for the toolkit to publish each business as a profi
   a mock chat and fake wallet), `test_telegram.py` (adapter against a fake Bot API),
   `test_nostr.py` (vectors, key custody, mapping, round trip through the local relay).
 - `docs/telegram-merchant-bot-spec.md` — design of the Telegram merchant bot.
+- `deploy/` and `docs/vps.md` — the bot as the `gentifi-bot` service on the Gentifi VPS
+  (next to the toolkit's `gentifi-host`, on 127.0.0.1:8765), pinned to `deploy/constraints.txt`.
 - `docs/developers-page.md` — copy for the Gentifi Business Profile section on
   gentifi.com/standards.
 
