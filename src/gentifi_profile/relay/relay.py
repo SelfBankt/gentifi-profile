@@ -13,6 +13,10 @@ Go live. "Something's wrong" sends their note to Gentifi's team chats (linked
 with `gentifi-relay team`); `gentifi-relay review` reloads the edited profile and
 shows it to them again.
 
+Photos: an owner can send a photo of their price board or menu at any time. It goes
+to the team chats with a draft catalogue read from it (drafts.py), for Gentifi to
+check before changing anything.
+
 Silence is safe: nothing is confirmed to the customer until the owner taps Accept.
 Gentifi never holds money: payment requests come from the business's own wallet
 or payment link (see payments.py).
@@ -25,7 +29,8 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -33,6 +38,7 @@ from ..freshness import parse_time
 from ..nostr.mapping import hours_text
 from ..store import RequestBook
 from .channel import Button, Incoming, Keyboard, OwnerChannel
+from .drafts import Draft, Drafter
 from .links import Links, Merchant
 from .payments import Http, PaymentError, check_address, http_get, is_settled, request_invoice
 
@@ -79,12 +85,16 @@ def money(m: dict[str, Any] | None) -> str:
 
 class OwnerRelay:
     def __init__(self, book: RequestBook, channel: OwnerChannel, links: Links,
-                 http: Http = http_get, bot_username: str | None = None):
+                 http: Http = http_get, bot_username: str | None = None, drafter: Drafter | None = None,
+                 background: Callable[[Callable[[], None]], None] | None = None):
         self.book = book
         self.channel = channel
         self.links = links
         self.http = http
         self.bot_username = bot_username
+        self.drafter = drafter
+        # Reading a photo takes seconds: do it off the relay's thread (tests run it at once)
+        self.background = background or (lambda fn: threading.Thread(target=fn, name="gentifi-draft", daemon=True).start())
         self.events: queue.Queue[tuple[str, Any, Any]] = queue.Queue()
         self.awaiting_time: dict[str, str] = {}   # chat_id -> reference waiting for a typed time
         self.awaiting_setup: dict[str, str] = {}  # chat_id -> "change", "lightning" or "link" while onboarding
@@ -111,6 +121,8 @@ class OwnerRelay:
         try:
             if kind == "event":
                 self.handle_event(a, b)
+            elif kind == "draft":
+                self._drafted(a, b)
             else:
                 self.handle(a)
         except Exception as exc:  # keep relaying whatever one message did
@@ -297,6 +309,8 @@ class OwnerRelay:
     def handle(self, inc: Incoming) -> None:
         if inc.kind == "button":
             self._button(inc)
+        elif inc.kind in {"photo", "file"}:
+            self._photo(inc)
         else:
             self._text(inc)
 
@@ -755,3 +769,56 @@ class OwnerRelay:
             self._send_review(merchant.chat_id, business_id, "Gentifi has updated your listing. Please check it again:")
         else:
             self.channel.send(merchant.chat_id, "Gentifi has updated your listing. Send /listing to see it.")
+
+    # ------------------------------------------------------------ photos of prices
+
+    def _photo(self, inc: Incoming) -> None:
+        merchant = self.links.by_chat(inc.chat_id)
+        if merchant is None:
+            self.channel.send(inc.chat_id, "This bot is for businesses on Gentifi. "
+                                           "Open the invite link Gentifi gave you to connect your business.")
+            return
+        if inc.kind == "file":
+            self.channel.send(inc.chat_id, "I can't read that kind of file. Send a photo of your price board, "
+                                           "menu or price list instead (a screenshot of a PDF works too).")
+            return
+        name = self._name(merchant.business_id)
+        self.channel.send(inc.chat_id, "Thanks, I've got your photo. Gentifi will read it and send you your "
+                                       "listing to check before anything changes.")
+        for chat_id, _ in self.links.team():
+            try:
+                self.channel.send_photo(chat_id, inc.value, f"{name} sent a photo of their prices.")
+            except Exception as exc:
+                print(f"gentifi-relay: couldn't pass a photo to team chat {chat_id}: {exc!r}", file=sys.stderr)
+        if self.drafter is None:
+            self._tell_team("Read it with gentifi draft on your Mac (the bot can't draft here).")
+            return
+
+        def read() -> None:
+            try:
+                draft = self.drafter.draft(merchant.business_id, self.channel.download(inc.value), inc.mime)
+            except Exception as exc:  # reported to the team, never to the owner
+                draft = Draft(Path("."), error=f"couldn't fetch the photo: {exc}")
+            self.events.put(("draft", merchant.business_id, draft))
+
+        self.background(read)
+
+    def _drafted(self, business_id: str, draft: Draft) -> None:
+        name = self._name(business_id)
+        print(f"gentifi-relay: draft for {business_id}: {len(draft.rows)} items in {draft.folder}"
+              + (f", error: {draft.error}" if draft.error else ""), file=sys.stderr)
+        if draft.error:
+            self._tell_team(f"Couldn't draft {name}'s photo: {draft.error}")
+            return
+        lines = [f"Draft for {name}: {len(draft.rows)} items, {len(draft.to_check)} to check."]
+        for row in draft.rows:
+            price = (f"£{float(row['price']):.2f}" if row.get("price") else
+                     f"from £{float(row['price_from']):.2f}" if row.get("price_from") else "no price")
+            unit = f" per {row['unit']}" if row.get("unit") and row["unit"] not in {"each", "item"} else ""
+            lines.append(f"• {row.get('name', '?')}: {price}{unit}" + (f"  ⚠ {row['check']}" if row.get("check") else ""))
+        lines += ["", f"Files on the VPS: {draft.folder}",
+                  "Check every name and price against the photo, then set the shop up "
+                  "(gentifi init, or update its sheet) and send it to the owner with "
+                  f"gentifi-bot invite {business_id} --onboard, or gentifi-bot review {business_id}."]
+        text = "\n".join(lines)
+        self._tell_team(text if len(text) <= 4000 else text[:3900] + "\n… (more in catalogue.csv)")
