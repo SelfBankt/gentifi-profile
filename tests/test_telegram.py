@@ -2,19 +2,24 @@
 
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import socket
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
 from gentifi_profile.relay import Button
-from gentifi_profile.relay.telegram import TelegramChannel, TelegramError
+from gentifi_profile.relay.telegram import TelegramChannel, TelegramError, _connect_ipv4_first, _open
 
 TOKEN = "123456:TEST-token"
 
 
+class Api(tuple):
+    """(url, calls), plus the connections the fake API accepted and when to drop one."""
+
+
 @pytest.fixture
 def api():
-    calls = []
+    calls, connections, drop = [], [], []  # drop: close the connection after these many requests
     updates = [
         {"update_id": 7, "message": {"message_id": 1, "chat": {"id": 1001, "type": "private"},
                                      "from": {"first_name": "Jo"}, "text": "/start abc"}},
@@ -25,8 +30,14 @@ def api():
     ]
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"  # like Telegram: connections stay open
+
         def log_message(self, *args):
             pass
+
+        def setup(self):
+            super().setup()
+            connections.append(self)
 
         def do_POST(self):
             token, method = self.path.strip("/").split("/")
@@ -47,12 +58,17 @@ def api():
             data = json.dumps(out).encode()
             self.send_response(200 if out["ok"] else 400)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            if drop and len(calls) in drop:
+                self.close_connection = True  # without saying so, as a server timing out idle connections does
 
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}", calls
+    out = Api((f"http://127.0.0.1:{server.server_port}", calls))
+    out.connections, out.drop = connections, drop
+    yield out
     server.shutdown()
 
 
@@ -139,3 +155,41 @@ def test_photos_are_received_downloaded_and_passed_on():
         assert "GONE" not in str(exc.value), "the token never appears in errors"
     finally:
         server.shutdown()
+
+
+def test_one_connection_is_kept_open_and_reopened_when_telegram_closes_it(api):
+    url, calls = api
+    ch = TelegramChannel(TOKEN, api=url)
+    api.drop.append(4)  # Telegram closes it after the fourth message
+    for _ in range(4):
+        ch.send("1001", "Hi")
+    assert len(api.connections) == 1, "no new connection (and secure handshake) for every message"
+    assert ch.send("1001", "Again") == "99"
+    assert len(api.connections) == 2 and [m for m, _ in calls].count("sendMessage") == 5, "sent once, not twice"
+
+
+def test_ipv4_is_tried_first(monkeypatch):
+    tried = []
+    v6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 443, 0, 0))
+    v4 = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a: [v6, v4])
+
+    class Fake:
+        def __init__(self, family, *a):
+            self.family = family
+
+        def settimeout(self, t):
+            pass
+
+        def connect(self, addr):
+            tried.append(self.family)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket, "socket", Fake)
+    assert _connect_ipv4_first(("api.telegram.org", 443), 5).family == socket.AF_INET
+    assert tried == [socket.AF_INET]
+    for scheme in ("https", "http"):
+        assert _open(scheme, "api.telegram.org", None)._create_connection is _connect_ipv4_first, \
+            "the channel's own connections use it"
