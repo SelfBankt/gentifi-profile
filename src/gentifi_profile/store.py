@@ -370,6 +370,9 @@ class RequestBook:
         # The longest a business may take to confirm, whatever its profile says (the owner
         # relay sets it, so customers aren't left waiting a day for a phone tap)
         self.max_sla_minutes: int | None = None
+        # Called as on_save(reference, record) whenever a request changes, so a restart doesn't
+        # lose it (the owner relay saves them). The record never has who the customer is.
+        self.on_save: Callable[[str, dict[str, Any]], None] | None = None
 
     @property
     def now(self) -> datetime:
@@ -395,7 +398,8 @@ class RequestBook:
         key = (request["business_id"], rid)
         fingerprint = _fingerprint(request)
         if key in self.by_request:  # idempotency: a retry gets the same answer
-            if self.fingerprints[key] != fingerprint:
+            # A request restored after a restart has no fingerprint (it would hash the customer)
+            if self.fingerprints.get(key, fingerprint) != fingerprint:
                 return self._receipt(rid, "failed", message=f"request_id '{rid}' was already used for a different request; use a new request_id")
             return self.by_request[key]
         try:
@@ -471,6 +475,7 @@ class RequestBook:
                                     "created_at": self.now}
         if receipt["status"] in ENDED:
             self._forget(self.bookings[reference])
+        self._save(reference)
         if receipt["status"] == "pending_confirmation":
             self._emit("pending", reference)
         return receipt
@@ -591,21 +596,46 @@ class RequestBook:
         self.by_request[(booking["business_id"], receipt["request_id"])] = receipt
         if receipt["status"] in ENDED:
             self._forget(booking)
+        self._save(receipt.get("reference", ""))
 
     @staticmethod
     def _forget(booking: dict[str, Any]) -> None:
         """Drop who the request was for: never saved, and no longer kept once it's over."""
         request = booking["request"]
-        if "customer" in request or "notes" in request:
+        if "customer" in request or "notes" in request or "shown" in booking or booking.get("restored"):
             request.pop("customer", None)
             request.pop("notes", None)
+            booking.pop("shown", None)
             booking["forgotten"] = True
+
+    def _save(self, reference: str) -> None:
+        booking = self.bookings.get(reference)
+        if self.on_save is None or booking is None:
+            return
+        request = {k: v for k, v in booking["request"].items() if k not in {"customer", "notes"}}
+        party = booking["request"].get("customer", {}).get("party_size")
+        if party:  # how many places it takes, which isn't who
+            request["customer"] = {"party_size": party}
+        self.on_save(reference, {"request": request, "receipt": booking["receipt"], "business_id": booking["business_id"],
+                                 "created_at": _iso(booking["created_at"]), "forgotten": bool(booking.get("forgotten"))})
+
+    def restore(self, records: dict[str, dict[str, Any]]) -> None:
+        """Requests saved before a restart (on_save's records). Who the customer is was never
+        saved: the owner still has it in the message about the request."""
+        for reference, r in records.items():
+            if reference in self.bookings:
+                continue
+            self.bookings[reference] = {"request": r["request"], "receipt": r["receipt"], "business_id": r["business_id"],
+                                        "created_at": parse_time(r["created_at"]), "restored": True,
+                                        **({"forgotten": True} if r.get("forgotten") else {})}
+            self.by_request[(r["business_id"], r["receipt"]["request_id"])] = r["receipt"]
 
     def close(self, reference: str) -> None:
         """The owner has handed the order over (collected, delivered, done): forget the customer."""
         with self.lock:
             if reference in self.bookings:
                 self._forget(self.bookings[reference])
+                self._save(reference)
 
     def _owner_respond(self, reference: str, accept: bool, message: str | None = None,
                        decline_reason: str = "unavailable") -> dict[str, Any]:

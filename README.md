@@ -143,7 +143,8 @@ Use `--transport streamable-http` to serve it over HTTP instead. With
 [Run the bot on its own](#run-the-bot-on-its-own).
 
 **This is a reference implementation, not a production service.** It keeps
-bookings in memory, doesn't take payment (at most it passes on the business's own
+bookings in memory (with `--telegram`, the relay database keeps them through a restart, never with
+the customer's details), doesn't take payment (at most it passes on the business's own
 payment request) and doesn't adjust stock levels on orders. Its job is to show the intended behaviour and let you test
 the format with real agents.
 
@@ -253,7 +254,7 @@ for the business until someone has checked the draft.
 On the Gentifi VPS it runs as the `gentifi-bot` service: see [docs/vps.md](docs/vps.md).
 
 Only one copy of the bot can poll Telegram at a time, and each copy of the server
-keeps its own requests in memory. So run exactly one server with `--telegram`, over
+keeps its own requests. So run exactly one server with `--telegram`, over
 HTTP, from the folder with your `.env` (or one below it):
 
 ```bash
@@ -337,7 +338,7 @@ the listings) and `/resume`.
 - **Only relays on this machine are allowed** unless you pass `--allow-public`
   (`--nostr-allow-public` for the server). Events sent to a public relay are copied
   by others and can't be fully taken back.
-- Pausing and resuming are kept in memory, like requests: a restarted server
+- Pausing and resuming are kept in memory: a restarted server
   publishes every business as open.
 - **Orders don't come back from Nostr yet.** Marketplace apps may offer to send the
   business an order as an encrypted message, which nothing reads yet; each listing says

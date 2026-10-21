@@ -33,7 +33,7 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
@@ -42,7 +42,7 @@ from zoneinfo import ZoneInfo
 
 from ..freshness import parse_time
 from ..nostr.mapping import hours_text
-from ..store import RequestBook, file_value
+from ..store import KEEP_CUSTOMER_DAYS, RequestBook, file_value
 from .channel import Button, Incoming, Keyboard, OwnerChannel
 from .drafts import Draft, Drafter
 from .links import Links, Merchant
@@ -126,6 +126,9 @@ class OwnerRelay:
             book.directory.restore_marks(links.stock_marks())
             book.directory.on_edits = links.save_owner_edits  # and prices and descriptions they changed
             book.directory.restore_edits(links.owner_edits())
+            book.on_save = links.save_order  # and open orders, without who the customer is
+            book.restore(links.orders(self._kept_since()))
+        links.forget_orders(self._kept_since())
 
     # ------------------------------------------------------------ plumbing
 
@@ -156,6 +159,7 @@ class OwnerRelay:
         """Periodic work: expire unanswered requests, check Lightning invoices, show edited listings,
         pick up profile files the toolkit's host has rewritten."""
         self.book.expire_overdue()
+        self.links.forget_orders(self._kept_since())
         with self.book.lock:
             self.book.directory.refresh()
         for business_id in self.links.take_review_requests():
@@ -190,6 +194,9 @@ class OwnerRelay:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _kept_since(self) -> datetime:
+        return self.book.now - timedelta(days=KEEP_CUSTOMER_DAYS)
 
     def _act(self, reference: str, fn):
         self._acting.add(reference)
@@ -235,6 +242,7 @@ class OwnerRelay:
                                                               customer.get("email")] if x))
         elif booking.get("forgotten"):
             lines.append("Customer: details removed now this has ended.")
+        lines.extend(booking.get("shown", []))
         if req.get("notes"):
             lines.append(f"Note: {req['notes']}")
         return "\n".join(lines)
@@ -243,6 +251,22 @@ class OwnerRelay:
         action = self.book.bookings[reference]["request"]["action"]
         noun = {"book": "booking", "hold": "hold", "enquire": "enquiry"}.get(action, "order")
         return f"{noun.capitalize()} {reference}"
+
+    @staticmethod
+    def _customer_unknown(booking: dict[str, Any]) -> bool:
+        """An open request from before a restart whose customer we haven't been shown again. Its
+        details are only in the owner's message about it, so that message mustn't be rewritten."""
+        return bool(booking.get("restored") and not booking.get("forgotten") and "shown" not in booking
+                    and not booking["request"].get("customer", {}).get("name"))
+
+    def _recall(self, reference: str, text: str | None) -> None:
+        """After a restart, pick the customer's details back up from the owner's own message about the
+        request (Telegram sends it with each button press), to hold in memory until the request ends."""
+        booking = self.book.bookings[reference]
+        if self._customer_unknown(booking) and text:
+            shown = [line for line in text.splitlines() if line.startswith(("Customer: ", "Note: "))]
+            if shown:
+                booking["shown"] = shown
 
     def _owns(self, inc: Incoming, reference: str) -> bool:
         merchant = self.links.by_chat(inc.chat_id)
@@ -292,6 +316,10 @@ class OwnerRelay:
             return
         receipt = booking["receipt"]
         status = receipt["status"]
+        if status in {"pending_confirmation", "confirmed", "held"} and self._customer_unknown(booking):
+            if note:  # leave the message with the customer's details as it is, and say it below
+                self.channel.send(p.chat_id, f"{self._heading(reference)}: {note}")
+            return
         head = f"{self._heading(reference)}\n\n{self._summary(reference)}"
         if status == "pending_confirmation":
             self.channel.edit(p.chat_id, p.message_id, self._pending_text(reference), self._pending_buttons(reference))
@@ -353,6 +381,7 @@ class OwnerRelay:
         if not self._owns(inc, reference):
             self.channel.ack(inc, "This isn't one of your requests.")
             return
+        self._recall(reference, inc.text)
         try:
             note = self._act(reference, lambda: self._do(verb, reference, arg, inc))
         except ValueError:
@@ -569,6 +598,10 @@ class OwnerRelay:
             self.channel.send(inc.chat_id, "Nothing waiting for you right now.")
             return
         for p in open_:
+            if self._customer_unknown(self.book.bookings[p.reference]):
+                self.channel.send(inc.chat_id, f"{self._heading(p.reference)} is still open: "
+                                               "use the buttons on its message further up.")
+                continue
             # Re-send so the buttons are at the bottom of the chat, and retire the old message.
             self.channel.edit(p.chat_id, p.message_id, f"{self._heading(p.reference)}: moved down.", None)
             mid = self.channel.send(inc.chat_id, "…")

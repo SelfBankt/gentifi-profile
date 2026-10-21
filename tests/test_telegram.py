@@ -20,7 +20,8 @@ def api():
                                      "from": {"first_name": "Jo"}, "text": "/start abc"}},
         {"update_id": 8, "message": {"message_id": 2, "chat": {"id": -5, "type": "group"}, "text": "hi"}},
         {"update_id": 9, "callback_query": {"id": "cq1", "data": "a:GTF-1", "from": {"first_name": "Jo"},
-                                            "message": {"message_id": 42, "chat": {"id": 1001}}}},
+                                            "message": {"message_id": 42, "chat": {"id": 1001},
+                                                        "text": "Order GTF-1\nCustomer: Sam"}}},
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -63,6 +64,7 @@ def test_round_trip(api):
     assert [(i.kind, i.chat_id, i.value) for i in got] == [("text", "1001", "/start abc"),
                                                           ("button", "1001", "a:GTF-1")]  # group ignored
     assert got[1].message_id == "42" and got[1].ack_id == "cq1"
+    assert got[1].text == "Order GTF-1\nCustomer: Sam", "the pressed message's text comes with it"
     assert ch.poll(0) == []  # offset moved past what was seen
     assert ch.send("1001", "Hi", [[Button("Accept", "a:GTF-1")]]) == "99"
     method, body = calls[-1]

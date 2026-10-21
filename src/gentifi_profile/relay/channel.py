@@ -29,6 +29,7 @@ class Incoming:
     ack_id: str | None = None       # channel-specific id to acknowledge a button press
     name: str | None = None         # the sender's display name, when known
     mime: str = "image/jpeg"        # a photo's type (Telegram's own photos are JPEG)
+    text: str | None = None         # for a button, the text of the message it belongs to
 
 
 class OwnerChannel(Protocol):
@@ -105,7 +106,7 @@ class MockChannel:
     def press(self, message_id: str, label: str) -> None:
         msg = self.messages[message_id]
         button = next(b for row in (msg.buttons or []) for b in row if b.label == label)
-        self.inbox.append(Incoming("button", msg.chat_id, button.data, message_id, ack_id=button.data))
+        self.inbox.append(Incoming("button", msg.chat_id, button.data, message_id, ack_id=button.data, text=msg.text))
 
     def type(self, chat_id: str, text: str, name: str | None = "Owner") -> None:
         self.inbox.append(Incoming("text", chat_id, text, name=name))

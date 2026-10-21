@@ -290,3 +290,73 @@ def test_details_are_forgotten_after_a_week_at_most(shop):
     clock.now += timedelta(hours=1)
     book.expire_overdue()
     assert customer_of(book, reference) == (None, None)
+
+
+def restartable(tmp_path):
+    """A bot that can be restarted: the same relay database and the same owner chat each time."""
+    clock, db, chat = Clock(), tmp_path / "relay.db", MockChannel()
+
+    def start():
+        book = RequestBook(Directory.from_folder(EXAMPLES, clock=clock))
+        book.max_sla_minutes = 120
+        links = Links(db)
+        relay = OwnerRelay(book, chat, links)
+        return book, links, relay, Handoff(book, links, SECRET)
+    return clock, db, chat, start
+
+
+def test_open_orders_survive_a_restart_without_saving_the_customer(tmp_path):
+    clock, db, chat, start = restartable(tmp_path)
+    book, links, relay, handoff = start()
+    link_owner(links, chat, relay)
+    reference = handoff.submit(page_order())["reference"]
+    relay.step()
+    mid = chat.last(OWNER).message_id
+    assert "Customer: Sam Carter, 07700 900123" in chat.messages[mid].text
+
+    saved = db.read_bytes() + b"".join(p.read_bytes() for p in tmp_path.glob("relay.db-*"))
+    for secret in (b"Sam Carter", b"07700 900123", b"Brown eggs"):
+        assert secret not in saved, "the customer's details are never saved"
+
+    book, links, relay, handoff = start()  # gentifi-bot restarted
+    assert handoff.order(FARM, "AB12CD34")["status"] == "pending_confirmation", "the page still sees it"
+    relay.tick()
+    relay.step()
+    assert "Sam Carter" in chat.messages[mid].text, "nothing rewrote the owner's message without the customer"
+
+    chat.press(mid, "Accept")
+    relay.step()
+    assert handoff.order(FARM, "AB12CD34")["status"] == "confirmed"
+    text = chat.messages[mid].text
+    assert "Customer: Sam Carter, 07700 900123" in text and "Note: Collection on 2026-10-17." in text
+    assert chat.labels(mid) == ["Done", "Cancel order"]
+
+    chat.press(mid, "Done")
+    relay.step()
+    assert "Sam Carter" not in chat.messages[mid].text and "details removed" in chat.messages[mid].text
+    assert "shown" not in book.bookings[reference], "forgotten again once the order ends"
+
+
+def test_after_a_restart_orders_leaves_the_customers_message_alone_and_expiry_still_works(tmp_path):
+    clock, db, chat, start = restartable(tmp_path)
+    book, links, relay, handoff = start()
+    link_owner(links, chat, relay)
+    handoff.submit(page_order())
+    relay.step()
+    mid = chat.last(OWNER).message_id
+
+    book, links, relay, handoff = start()
+    chat.type(OWNER, "/orders")
+    relay.step()
+    assert "Sam Carter" in chat.messages[mid].text and chat.labels(mid) == ["Accept", "Decline", "Suggest another time"]
+    assert "still open" in chat.last(OWNER).text
+
+    clock.now += timedelta(hours=2, minutes=1)
+    relay.tick()
+    relay.step()
+    assert handoff.order(FARM, "AB12CD34")["status"] == "expired"
+    assert "didn't answer in time" in chat.messages[mid].text and "Sam Carter" not in chat.messages[mid].text
+
+    clock.now += timedelta(days=8)
+    start()[2].tick()
+    assert start()[3].order(FARM, "AB12CD34") is None, "saved orders are deleted after a week"
