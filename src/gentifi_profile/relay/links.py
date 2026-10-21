@@ -50,6 +50,15 @@ CREATE TABLE IF NOT EXISTS stock_marks (
     marked_at   TEXT NOT NULL,
     PRIMARY KEY (business_id, offering_id)
 );
+CREATE TABLE IF NOT EXISTS owner_edits (
+    business_id TEXT NOT NULL,
+    offering_id TEXT NOT NULL,
+    field       TEXT NOT NULL,                 -- 'price' (minor units) or 'description'
+    value       TEXT NOT NULL,                 -- JSON
+    sheet_value TEXT NOT NULL,                 -- JSON: what the profile said when the owner edited it
+    edited_at   TEXT NOT NULL,
+    PRIMARY KEY (business_id, offering_id, field)
+);
 CREATE TABLE IF NOT EXISTS prompts (
     reference   TEXT PRIMARY KEY,
     business_id TEXT NOT NULL,
@@ -116,6 +125,8 @@ class Links:
         self.onboarding_file = None if str(path) == ":memory:" else Path(path).with_name("onboarding.json")
         # And what owners have marked sold out or back in stock, for the host to show customers' agents
         self.stock_file = None if str(path) == ":memory:" else Path(path).with_name("stock.json")
+        # And their own edits to prices and descriptions
+        self.edits_file = None if str(path) == ":memory:" else Path(path).with_name("edits.json")
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._lock = threading.Lock()
         with self._lock:
@@ -126,6 +137,7 @@ class Links:
             self._db.commit()
         self._write_onboarding()
         self._write_stock()
+        self._write_edits()
 
     def _q(self, sql: str, *args: object) -> list[tuple]:
         with self._lock, self._db:
@@ -188,6 +200,30 @@ class Links:
 
     def _write_stock(self) -> None:
         _write_json(self.stock_file, {"stock": self.stock_marks()})
+
+    # ------------------------------------------------------------ edits
+
+    def owner_edits(self) -> dict[str, dict[str, dict[str, dict]]]:
+        """{business id: {offering id: {field: {"value", "sheet", "at"}}}}, as Directory.edits holds them."""
+        edits: dict[str, dict[str, dict[str, dict]]] = {}
+        for business_id, offering_id, field, value, sheet, at in self._q(
+                "SELECT business_id, offering_id, field, value, sheet_value, edited_at FROM owner_edits "
+                "ORDER BY business_id, offering_id, field"):
+            edits.setdefault(business_id, {}).setdefault(offering_id, {})[field] = {
+                "value": json.loads(value), "sheet": json.loads(sheet), "at": at}
+        return edits
+
+    def save_owner_edits(self, business_id: str, edits: dict[str, dict[str, dict]]) -> None:
+        """Replace a business's edits (Directory.on_edits), and the file the host reads."""
+        rows = [(business_id, o, f, json.dumps(e["value"]), json.dumps(e["sheet"]), e["at"])
+                for o, fields in sorted(edits.items()) for f, e in sorted(fields.items())]
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM owner_edits WHERE business_id = ?", (business_id,))
+            self._db.executemany("INSERT INTO owner_edits VALUES (?, ?, ?, ?, ?, ?)", rows)
+        self._write_edits()
+
+    def _write_edits(self) -> None:
+        _write_json(self.edits_file, {"edits": self.owner_edits()})
 
     def request_review(self, business_id: str) -> None:
         """Ask the running bot to reload the profile and show it to the owner again. Clears the

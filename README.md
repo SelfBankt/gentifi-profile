@@ -172,12 +172,17 @@ Please answer by 22:00 today.
 - **Suggest another time** declines with the suggestion, so the agent checks with
   the customer and sends a new request. The customer still confirms what is booked.
 - **No answer** by `confirm_by` expires the request; nothing is confirmed.
-- Owners can send `/orders`, `/listing`, `/soldout`, `/instock`, `/pause`, `/resume` and `/help`.
+- Owners can send `/orders`, `/listing`, `/soldout`, `/instock`, `/edit`, `/pause`, `/resume` and `/help`.
   `/soldout` and `/instock` list the shop's products as buttons: one tap marks an item sold
   out or back in stock (every size of it), owner-confirmed and fresh. Marks are saved in the
   database, so they last through a restart and through Gentifi editing the profile, until the
   profile is newer (its `updated_at`, or the item's stock record: the owner's sheet was read
   again after the mark).
+- `/edit` changes an item's price or description: pick the item, Price or Description, type
+  it, and Confirm. It's live at once (the owner confirmed it, as with a change to their sheet),
+  a price more than double or under half the old one is flagged first, and Gentifi's team chats
+  are told. Each edit lasts until the profile's own value for that field changes (the sheet
+  wins), and is saved in the database and in `edits.json` for the toolkit's host.
 
 Set up:
 
@@ -232,6 +237,7 @@ rewritten whenever one is invited with `--onboard` or goes live; the toolkit's h
 In the same way, `stock.json` holds what owners have marked sold out or back in stock, by
 business and offering id with the time of each mark; the host (`GENTIFI_STOCK_FILE`) shows
 it to customers' agents over the sheet, within 5 seconds, unless the sheet is newer.
+`edits.json` does the same for owners' price and description edits (`GENTIFI_EDITS_FILE`).
 
 ### Photos of prices
 

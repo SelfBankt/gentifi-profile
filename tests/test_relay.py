@@ -587,6 +587,118 @@ def test_a_newer_sheet_wins_over_an_older_mark(tmp_path):
     assert links.stock_marks() == {}
 
 
+def _offering(book, offering_id):
+    return next(o for o in book.directory.get(FARM)["offerings"] if o["id"] == offering_id)
+
+
+def test_owners_edit_prices_and_descriptions_live_and_the_team_hears(tmp_path):
+    TEAM = "3003"
+    folder = tmp_path / "profiles"
+    folder.mkdir()
+    profile = json.loads((EXAMPLES / "farm-shop.json").read_text())
+    (folder / "farm-shop.json").write_text(json.dumps(profile))
+    db = tmp_path / "relay.db"
+
+    def start():
+        book = RequestBook(Directory.from_folder(folder, clock=Clock()))
+        links, chat = Links(db), MockChannel()
+        return book, links, chat, OwnerRelay(book, chat, links)
+
+    book, links, chat, relay = start()
+    chat.type(TEAM, f"/start {links.team_invite()}", name="Finn")
+    chat.type(OWNER, f"/start {links.invite(FARM)}", name="Jo")
+    relay.step()
+    changed = []
+    book.directory.listeners.append(changed.append)
+
+    chat.type(OWNER, "/edit")
+    relay.step()
+    menu = chat.last(OWNER).message_id
+    assert chat.labels(menu) == ["Free-range eggs", "Seasonal veg box", "Half lamb, butchered", "Farm tour (up to 6 people)"]
+    chat.press(menu, "Seasonal veg box")
+    relay.step()
+    assert "Price: £18.00" in chat.messages[menu].text
+    chat.press(menu, "Price")
+    relay.step()
+    assert chat.messages[menu].text == "Type the new price for Seasonal veg box, like 4.50."
+
+    chat.type(OWNER, "eighteen")
+    relay.step()
+    assert chat.last(OWNER).text.startswith("That doesn't look like a price.")
+    chat.type(OWNER, "£180")
+    relay.step()
+    preview = chat.last(OWNER)
+    assert "Seasonal veg box: £18.00 → £180.00" in preview.text and "big change" in preview.text
+    chat.press(preview.message_id, "Cancel")
+    relay.step()
+    assert _offering(book, "veg_box")["price"]["amount"]["amount_minor"] == 1800, "cancelled: nothing changed"
+
+    chat.type(OWNER, "/edit")
+    relay.step()
+    menu = chat.last(OWNER).message_id
+    chat.press(menu, "Seasonal veg box")
+    relay.step()
+    chat.press(menu, "Price")
+    relay.step()
+    chat.type(OWNER, "19.5")
+    relay.step()
+    preview = chat.last(OWNER)
+    assert "£18.00 → £19.50" in preview.text and "big change" not in preview.text
+    assert changed == []
+    chat.press(preview.message_id, "Confirm")
+    relay.step()
+    assert _offering(book, "veg_box")["price"]["amount"]["amount_minor"] == 1950, "live at once"
+    assert changed == [FARM]
+    assert chat.messages[preview.message_id].text.startswith("Done. Customers' assistants now see the new price")
+    assert chat.last(TEAM).text == "Hollowbrook Farm Shop: Jo changed the price of Seasonal veg box: £18.00 → £19.50."
+    assert json.loads((tmp_path / "edits.json").read_text())["edits"][FARM]["veg_box"]["price"] == {
+        "value": 1950, "sheet": 1800, "at": "2026-10-15T20:00:00+01:00"}
+
+    # A description, and a price for something priced on request
+    for item, button, typed in [("Seasonal veg box", "Description", "Six to eight seasonal vegetables, washed."),
+                                ("Half lamb, butchered", "Price", "120")]:
+        chat.type(OWNER, "/edit")
+        relay.step()
+        menu = chat.last(OWNER).message_id
+        chat.press(menu, item)
+        relay.step()
+        chat.press(menu, button)
+        relay.step()
+        chat.type(OWNER, typed)
+        relay.step()
+        chat.press(chat.last(OWNER).message_id, "Confirm")
+        relay.step()
+    assert _offering(book, "veg_box")["description"] == "Six to eight seasonal vegetables, washed."
+    assert _offering(book, "lamb_half")["price"] == {"type": "fixed", "amount": {"amount_minor": 12000, "currency": "GBP"}}
+    assert "price on request → £120.00" in chat.last(TEAM).text
+
+    book, links, chat, relay = start()  # restarted: the edits stay
+    assert _offering(book, "veg_box")["price"]["amount"]["amount_minor"] == 1950
+    assert _offering(book, "lamb_half")["price"]["type"] == "fixed"
+
+    # The owner changes the veg box's price in their sheet: the sheet wins for that field only
+    profile["offerings"][1]["price"]["amount"]["amount_minor"] = 2000
+    (folder / "farm-shop.json").write_text(json.dumps(profile))
+    book.directory.reload(FARM)
+    veg = _offering(book, "veg_box")
+    assert veg["price"]["amount"]["amount_minor"] == 2000, "the sheet's new price wins"
+    assert veg["description"] == "Six to eight seasonal vegetables, washed.", "the description edit stays"
+    assert set(links.owner_edits()[FARM]) == {"veg_box", "lamb_half"}
+    assert set(links.owner_edits()[FARM]["veg_box"]) == {"description"}
+
+
+def test_edits_are_only_for_the_owner_and_wait_until_live(setup):
+    _, book, links, chat, relay, _ = setup()
+    chat.inbox.append(Incoming("button", STRANGER, "ep:veg_box", "1", ack_id="q"))
+    relay.step()
+    assert chat.acks[-1][1] == "This isn't one of your businesses."
+    links.invite("gtf_brooksideplumbing", onboarding=True)
+    links.set_status(FARM, "onboarding")
+    chat.type(OWNER, "/edit")
+    relay.step()
+    assert "You're not live yet" in chat.last(OWNER).text
+
+
 def test_an_invite_before_the_folder_is_copied_tells_nobody(tmp_path):
     book = RequestBook(Directory.from_folder(tmp_path))  # the business isn't there yet
     links, chat = Links(), MockChannel()

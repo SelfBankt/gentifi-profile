@@ -119,7 +119,7 @@ Build the order loop first with one real merchant; onboarding automation and Nos
 4. Manual onboarding: you fill the profile by hand for the first merchant; bot only does the review and go-live steps. *Built 21 Oct 2026 (`gentifi-relay invite --onboard`, `gentifi-relay review`): the business stays hidden until the owner checks the summary, sets payment and taps Go live; "Something's wrong" sends their note to Gentifi's team chat (`gentifi-relay team`).*
 5. Nostr publishing: profile to NIP-15/NIP-99 events, remote signer, Gentifi relay plus public relays. *Built (`nostr/`, `gentifi-nostr`): kind 0, NIP-15 stall and products, NIP-99 listings (with the GammaMarkets market spec's product, collection and shipping-option events since 21 Oct 2026), NIP-09 deletion on pause, republished on sold out, pause and resume; keys encrypted in the database; tested against a local relay only. Still to do: NIP-46 signer, a Gentifi relay, public relays.*
 6. AI onboarding: photo/link extraction, gap questions, validator loop.
-7. Freshness nudges and quick edits.
+7. Freshness nudges and quick edits. *Built 21 Oct 2026: `/soldout` and `/instock` (live to customers' agents through the toolkit's host), and `/edit` for a price or description with buttons, live on Confirm, the team told. Still to do: typed edits in plain words ("sourdough is £4.50 now") drafted by AI, and freshness nudges.*
 8. WhatsApp adapter.
 
 **Open questions**

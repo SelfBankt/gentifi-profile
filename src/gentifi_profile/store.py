@@ -40,6 +40,21 @@ def _km(a: dict[str, float], b: dict[str, float]) -> float:
     return 6371 * 2 * math.asin(math.sqrt(h))
 
 
+def file_value(offering: dict[str, Any], field: str) -> Any:
+    """An offering's price (minor units, None when priced on request) or description, as compared for edits."""
+    if field == "description":
+        return offering.get("description") or ""
+    price = offering.get("price", {})
+    return price["amount"]["amount_minor"] if price.get("type") in {"fixed", "from"} and price.get("amount") else None
+
+
+def _currency(profile: dict[str, Any]) -> str:
+    for o in profile["offerings"]:
+        if o.get("price", {}).get("amount"):
+            return o["price"]["amount"]["currency"]
+    return "GBP"
+
+
 class Directory:
     """Profiles loaded from JSON files, keyed by business id."""
 
@@ -64,6 +79,13 @@ class Directory:
         self.marks: dict[str, dict[str, dict[str, str]]] = {}
         # Called with a business id and its marks whenever they change, to save them
         self.on_marks: Callable[[str, dict[str, dict[str, str]]], None] | None = None
+        # The owner's own edits to an offering's price or description, by business, offering
+        # and field: {"value": ..., "sheet": what the file said when edited, "at": ...}. An
+        # edit applies until the file's value for that field changes (the sheet wins then).
+        self.edits: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+        self.on_edits: Callable[[str, dict[str, dict[str, dict[str, Any]]]], None] | None = None
+        # Each profile as its file says, before edits and marks
+        self.sources: dict[str, dict[str, Any]] = {}
         for p in profiles or []:
             self.add(p)
 
@@ -109,8 +131,58 @@ class Directory:
         if errors:
             raise ValueError("invalid profile: " + "; ".join(f"{i.path}: {i.message}" for i in errors[:3]))
         # Work on a copy: bookings change availability in memory.
-        self.profiles[profile["business"]["id"]] = copy.deepcopy(profile)
-        self._apply_marks(profile["business"]["id"])
+        business_id = profile["business"]["id"]
+        self.sources[business_id] = copy.deepcopy(profile)
+        self.profiles[business_id] = copy.deepcopy(profile)
+        self._apply_edits(business_id)
+        self._apply_marks(business_id)
+
+    def set_edit(self, business_id: str, offering_id: str, field: str, value: Any, at: str) -> None:
+        """The owner changes an offering's price (minor units) or description."""
+        source = next(o for o in self.sources[business_id]["offerings"] if o["id"] == offering_id)
+        edits = self.edits.setdefault(business_id, {}).setdefault(offering_id, {})
+        edits[field] = {"value": value, "sheet": file_value(source, field), "at": at}
+        self._apply_edits(business_id)
+        self._save_edits(business_id)
+        self.changed(business_id)
+
+    def restore_edits(self, edits: dict[str, dict[str, dict[str, dict[str, Any]]]]) -> None:
+        """The edits saved before a restart, applied to the profiles already loaded."""
+        self.edits = {b: {o: dict(f) for o, f in e.items()} for b, e in edits.items()}
+        for business_id in list(self.edits):
+            if business_id in self.profiles:
+                self._apply_edits(business_id)
+                self.changed(business_id)
+
+    def _apply_edits(self, business_id: str) -> None:
+        profile, edits = self.profiles.get(business_id), self.edits.get(business_id)
+        if not profile or not edits:
+            return
+        sources = {o["id"]: o for o in self.sources[business_id]["offerings"]}
+        offerings = {o["id"]: o for o in profile["offerings"]}
+        stale = False
+        for offering_id, fields in list(edits.items()):
+            for field, edit in list(fields.items()):
+                if offering_id not in sources or file_value(sources[offering_id], field) != edit["sheet"]:
+                    del fields[field]  # gone from the catalogue, or the sheet changed this since
+                    stale = True
+                    continue
+                offering = offerings[offering_id]
+                if field == "description":
+                    offering["description"] = edit["value"]
+                elif offering["price"].get("type") in {"fixed", "from"} and offering["price"].get("amount"):
+                    offering["price"]["amount"]["amount_minor"] = edit["value"]
+                else:  # priced on request until now
+                    offering["price"] = {"type": "fixed", "amount": {"amount_minor": edit["value"], "currency": _currency(profile)},
+                                         **({"per": offering["price"]["per"]} if offering["price"].get("per") else {})}
+            if not fields:
+                del edits[offering_id]
+        if stale:
+            self._save_edits(business_id)
+
+    def _save_edits(self, business_id: str) -> None:
+        if self.on_edits:
+            self.on_edits(business_id, {o: dict(f) for o, f in self.edits.get(business_id, {}).items()})
 
     def set_stock(self, business_id: str, offering_ids: set[str], status: str, at: str) -> None:
         """The owner says these items are sold out (out_of_stock) or back (in_stock), at this time."""
@@ -491,6 +563,13 @@ class RequestBook:
     def mark_sold_out(self, business_id: str, offering_ids: set[str]) -> None:
         """Record the owner saying these items are sold out (fresh, owner-confirmed)."""
         self._set_stock(business_id, offering_ids, "out_of_stock")
+
+    def edit_offering(self, business_id: str, offering_id: str, field: str, value: Any) -> None:
+        """The owner changes a price (minor units) or description. Live at once, like the sheet."""
+        if field not in {"price", "description"}:
+            raise ValueError(f"can't edit {field}")
+        with self.lock:
+            self.directory.set_edit(business_id, offering_id, field, value, _iso(self.now))
 
     def mark_in_stock(self, business_id: str, offering_ids: set[str]) -> None:
         """Record the owner saying these items are back. How many isn't known, so quantities are dropped."""
