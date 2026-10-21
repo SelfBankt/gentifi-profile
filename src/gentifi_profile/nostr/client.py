@@ -49,17 +49,20 @@ async def _publish(url: str, events: list[dict[str, Any]], timeout: float) -> di
 
     answers = {e["id"]: (False, "no answer from the relay") for e in events}
     waiting = set(answers)
+
+    async def send_and_wait():
+        async with connect(url, open_timeout=timeout) as ws:
+            for event in events:
+                await ws.send(json.dumps(["EVENT", event], ensure_ascii=False))
+            while waiting:
+                message = json.loads(await ws.recv())
+                if message[:1] == ["OK"] and message[1] in waiting:
+                    answers[message[1]] = (bool(message[2]), message[3] if len(message) > 3 else "")
+                    waiting.discard(message[1])
+
     try:
-        async with asyncio.timeout(timeout):
-            async with connect(url, open_timeout=timeout) as ws:
-                for event in events:
-                    await ws.send(json.dumps(["EVENT", event], ensure_ascii=False))
-                while waiting:
-                    message = json.loads(await ws.recv())
-                    if message[:1] == ["OK"] and message[1] in waiting:
-                        answers[message[1]] = (bool(message[2]), message[3] if len(message) > 3 else "")
-                        waiting.discard(message[1])
-    except TimeoutError:
+        await asyncio.wait_for(send_and_wait(), timeout)  # asyncio.timeout() needs Python 3.11
+    except asyncio.TimeoutError:
         pass  # events the relay didn't answer keep "no answer from the relay"
     except Exception as exc:  # OSError, or websockets' own connection errors
         answers = {i: (False, f"couldn't reach the relay: {exc}") for i in answers}
@@ -70,7 +73,8 @@ async def _fetch(url: str, filters: list[dict[str, Any]], timeout: float) -> lis
     from websockets.asyncio.client import connect
 
     events = []
-    async with asyncio.timeout(timeout):
+
+    async def request():
         async with connect(url, open_timeout=timeout) as ws:
             await ws.send(json.dumps(["REQ", "gentifi", *filters]))
             while True:
@@ -80,3 +84,8 @@ async def _fetch(url: str, filters: list[dict[str, Any]], timeout: float) -> lis
                 elif message[:2] in (["EOSE", "gentifi"], ["CLOSED", "gentifi"]):
                     await ws.send(json.dumps(["CLOSE", "gentifi"]))
                     return events
+
+    try:
+        return await asyncio.wait_for(request(), timeout)
+    except asyncio.TimeoutError:  # not the built-in TimeoutError until Python 3.11
+        raise TimeoutError(f"no answer from {url} within {timeout:g} seconds") from None
