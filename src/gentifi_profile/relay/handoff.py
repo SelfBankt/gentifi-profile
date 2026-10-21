@@ -10,7 +10,8 @@ call needs the shared secret from a file both services can read
 (GENTIFI_HANDOFF_SECRET_FILE, default next to the relay database).
 
     GET  /handoff/businesses/<business_id>      -> {"telegram": true|false}
-    POST /handoff/orders                        -> the order's state (below)
+    POST /handoff/orders                        -> the order's state (below); 409 if the
+                                                   owner isn't on Telegram, 422 if refused
     GET  /handoff/orders/<business_id>/<ref>    -> the order's state, or 404
 
 State: {"status": pending_confirmation | confirmed | declined | expired | cancelled | failed,
@@ -26,7 +27,8 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from ..store import RequestBook, utc_now
+from ..freshness import parse_time
+from ..store import RequestBook
 from .links import Links
 
 AGENT = {"name": "Gentifi confirmation page"}
@@ -83,6 +85,13 @@ class Handoff:
             raise HandoffError("the customer's name and a phone number or email are needed")
         if not self.on_telegram(business_id):
             return None
+        # The page's clock and ours differ by milliseconds or more: a confirmation can't be
+        # later than now, or the request would look sent before the customer confirmed
+        now = self.book.now
+        try:
+            confirmed = min(parse_time(str(order.get("confirmed_at"))), now)
+        except (TypeError, ValueError):
+            confirmed = now
         notes = " ".join(x for x in [f"Collection on {order['collection_date']}." if order.get("collection_date") else "",
                                      str(order.get("note") or "").strip()] if x)
         request = {
@@ -90,9 +99,9 @@ class Handoff:
             "business_id": business_id,
             "action": "order",
             "agent": AGENT,
-            "created_at": utc_now().isoformat(timespec="seconds"),
+            "created_at": now.isoformat(),
             "customer_confirmation": {"method": "confirmation_page", "reference": ref,
-                                      "confirmed_at": order.get("confirmed_at") or utc_now().isoformat(timespec="seconds")},
+                                      "confirmed_at": confirmed.isoformat()},
             "items": [{"offering_id": str(i.get("offering_id")), "quantity": i.get("quantity", 1)} for i in items],
             "customer": {"name": name[:100], ("email" if "@" in contact else "phone"): contact[:100]},
         }
@@ -139,6 +148,8 @@ def add_routes(server: Any, handoff: Handoff) -> None:
             return JSONResponse({"error": str(exc)}, status_code=400)
         if state is None:
             return JSONResponse({"error": "not_on_telegram"}, status_code=409)
+        if state["status"] == "failed":  # nothing reached the owner: the page must hand over as before
+            return JSONResponse({"error": state.get("message", "failed")}, status_code=422)
         return JSONResponse(state)
 
     @server.custom_route("/handoff/orders/{business_id}/{ref}", methods=["GET"], include_in_schema=False)

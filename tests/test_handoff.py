@@ -49,7 +49,7 @@ def link_owner(links, chat, relay):
 def page_order(ref="AB12CD34", **extra):
     return {"business_id": FARM, "ref": ref, "items": [{"offering_id": "eggs", "quantity": 2}],
             "customer": {"name": "Sam Carter", "contact": "07700 900123"}, "collection_date": "2026-10-17",
-            "note": "Brown eggs if you have them", "confirmed_at": "2026-10-15T19:58:00Z", **extra}
+            "note": "Brown eggs if you have them", "confirmed_at": "2026-10-15T18:58:00Z", **extra}
 
 
 def test_only_owners_on_telegram_get_orders(shop):
@@ -78,7 +78,7 @@ def test_a_confirmed_order_goes_to_the_owner_and_the_page_sees_the_answer(shop):
     assert "Note: Collection on 2026-10-17. Brown eggs if you have them" in prompt.text
     request = book.bookings[state["reference"]]["request"]
     assert request["customer_confirmation"] == {"method": "confirmation_page", "reference": "AB12CD34",
-                                                "confirmed_at": "2026-10-15T19:58:00Z"}
+                                                "confirmed_at": "2026-10-15T18:58:00+00:00"}
 
     assert handoff.submit(page_order())["reference"] == state["reference"], "confirming twice is one order"
     assert handoff.order(FARM, "AB12CD34")["status"] == "pending_confirmation"
@@ -89,6 +89,16 @@ def test_a_confirmed_order_goes_to_the_owner_and_the_page_sees_the_answer(shop):
     assert answer["payment"] == {"status": "due_on_fulfilment"}
     assert "Pay £7.00 on collection or delivery" in answer["message"]
     assert handoff.order(FARM, "ZZ99ZZ99") is None
+
+
+def test_a_page_clock_slightly_ahead_still_counts_as_confirmed_first(shop):
+    clock, book, links, chat, relay, handoff = shop
+    link_owner(links, chat, relay)
+    ahead = (clock.now + timedelta(milliseconds=779)).isoformat()
+    state = handoff.submit(page_order(confirmed_at=ahead))
+    assert state["status"] == "pending_confirmation", state
+    confirmed = book.bookings[state["reference"]]["request"]["customer_confirmation"]["confirmed_at"]
+    assert datetime.fromisoformat(confirmed) == clock.now
 
 
 def test_email_contacts_and_unanswered_orders(shop):
@@ -170,6 +180,8 @@ def test_routes_need_the_secret_and_answer_in_json(shop):
     status, state = call(app, "POST", "/handoff/orders", page_order())
     assert status == 200 and state["status"] == "pending_confirmation"
     assert call(app, "POST", "/handoff/orders", page_order(ref="bad"))[0] == 400
+    refused = page_order(ref="EE55FF66", items=[{"offering_id": "lamb_half", "quantity": 1}])  # not orderable
+    assert call(app, "POST", "/handoff/orders", refused)[0] == 422, "refusals never look like success"
     assert call(app, "GET", f"/handoff/orders/{FARM}/AB12CD34") == (200, state)
     assert call(app, "GET", f"/handoff/orders/{FARM}/ZZ99ZZ99")[0] == 404
 
