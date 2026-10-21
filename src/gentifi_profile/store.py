@@ -45,6 +45,9 @@ class Directory:
         # Businesses the owner has paused (holiday, sold out for the day): hidden from
         # search and declining new requests until resumed.
         self.paused: set[str] = set()
+        # Called with a business id whenever its listing changes (e.g. to republish it).
+        # Keep them quick: they can run while the RequestBook is locked.
+        self.listeners: list[Callable[[str], None]] = []
         for p in profiles or []:
             self.add(p)
 
@@ -66,6 +69,21 @@ class Directory:
             raise ValueError("invalid profile: " + "; ".join(f"{i.path}: {i.message}" for i in errors[:3]))
         # Work on a copy: bookings change availability in memory.
         self.profiles[profile["business"]["id"]] = copy.deepcopy(profile)
+
+    def pause(self, business_id: str) -> None:
+        self.paused.add(business_id)
+        self.changed(business_id)
+
+    def resume(self, business_id: str) -> None:
+        self.paused.discard(business_id)
+        self.changed(business_id)
+
+    def changed(self, business_id: str) -> None:
+        for listener in self.listeners:
+            try:
+                listener(business_id)
+            except Exception as exc:  # a broken listener must never break the change itself
+                print(f"gentifi: listener failed for {business_id}: {exc}", file=sys.stderr)
 
     def get(self, business_id: str) -> dict[str, Any]:
         try:
@@ -349,6 +367,7 @@ class RequestBook:
                     rec["status"] = "out_of_stock"
                     rec.pop("quantity", None)
                     rec["freshness"] = dict(stamp)
+            self.directory.changed(business_id)
 
     def _pending(self, reference: str) -> dict[str, Any]:
         booking = self.bookings.get(reference)

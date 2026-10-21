@@ -11,7 +11,8 @@ Serves every profile in a folder to any MCP-capable agent:
 --telegram runs the owner confirmation relay alongside the server: pending
 requests go to the business owner's Telegram chat with one-tap buttons (see
 gentifi-relay for linking owners). Run only one copy with --telegram, over HTTP, and
-connect agents to it: Claude Desktop starts stdio servers more than once. --demo adds a tool that lets you play the business owner, so pending requests
+connect agents to it: Claude Desktop starts stdio servers more than once.
+--nostr-relay publishes every business to Nostr (gentifi-nostr has the details). --demo adds a tool that lets you play the business owner, so pending requests
 can be confirmed or declined. --now freezes the clock, so the example data stays
 fresh while you try things.
 """
@@ -116,6 +117,11 @@ def main(argv: list[str] | None = None) -> None:
                         help="freeze the clock at this ISO 8601 time (for demos and tests)")
     parser.add_argument("--telegram", action="store_true",
                         help="send pending requests to owners on Telegram (needs TELEGRAM_BOT_TOKEN, e.g. in .env)")
+    parser.add_argument("--nostr-relay", action="append", default=[], metavar="URL",
+                        help="publish every business to this Nostr relay, and again when its listing changes "
+                             "(repeat for more; needs GENTIFI_NOSTR_MASTER_KEY, see gentifi-nostr init)")
+    parser.add_argument("--nostr-allow-public", action="store_true",
+                        help="allow --nostr-relay addresses that aren't on this machine")
     args = parser.parse_args(argv)
 
     fixed: datetime | None = parse_time(args.now) if args.now else None
@@ -124,6 +130,8 @@ def main(argv: list[str] | None = None) -> None:
     book = RequestBook(directory)
     if args.telegram:
         start_telegram_relay(book)
+    if args.nostr_relay:
+        start_nostr_publisher(book, args.nostr_relay, args.nostr_allow_public)
     build_server(directory, demo=args.demo, book=book).run(args.transport)
 
 
@@ -141,6 +149,20 @@ def start_telegram_relay(book: RequestBook) -> None:
     threading.Thread(target=relay.run, name="gentifi-relay", daemon=True).start()
     # stderr only: with the stdio transport, stdout carries MCP messages
     print(f"gentifi-mcp: owner relay running as @{username}", file=sys.stderr)
+
+
+def start_nostr_publisher(book: RequestBook, relays: list[str], allow_public: bool) -> None:
+    try:
+        from .nostr import NostrKeyError, Publisher, RelayError, check_relays
+        from .nostr.cli import keystore
+    except ImportError as exc:
+        sys.exit(f"gentifi-mcp: Nostr publishing needs the nostr extra (pip install -e \".[nostr]\"): {exc}")
+    try:
+        publisher = Publisher(book.directory, keystore(), check_relays(relays, allow_public), lock=book.lock)
+    except (NostrKeyError, RelayError) as exc:
+        sys.exit(f"gentifi-mcp: can't publish to Nostr: {exc}")
+    publisher.start()
+    print(f"gentifi-mcp: publishing to Nostr at {', '.join(relays)}", file=sys.stderr)
 
 
 if __name__ == "__main__":
