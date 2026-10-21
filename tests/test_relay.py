@@ -521,6 +521,72 @@ def test_the_onboarding_list_is_kept_for_the_toolkits_host(tmp_path):
     assert not list(tmp_path.glob("*.tmp")), "replaced whole, never left half-written"
 
 
+def _stock(book, offering_id):
+    return {r["status"] for r in book.directory.get(FARM)["availability"]
+            if r["type"] == "stock" and r["offering_id"] == offering_id}
+
+
+def test_sold_out_is_kept_through_reloads_and_restarts_and_written_for_the_host(tmp_path):
+    folder = tmp_path / "profiles"
+    folder.mkdir()
+    (folder / "farm-shop.json").write_text((EXAMPLES / "farm-shop.json").read_text())
+    db = tmp_path / "relay.db"
+    clock = Clock()
+
+    def start():
+        book = RequestBook(Directory.from_folder(folder, clock=clock))
+        links, chat = Links(db), MockChannel()
+        relay = OwnerRelay(book, chat, links)
+        return book, links, chat, relay
+
+    book, links, chat, relay = start()
+    chat.type(OWNER, f"/start {links.invite(FARM)}", name="Jo")
+    relay.step()
+    chat.inbox.append(Incoming("button", OWNER, "so:eggs", "1", ack_id="q"))
+    relay.step()
+    assert _stock(book, "eggs") == {"out_of_stock"}
+    marks = json.loads((tmp_path / "stock.json").read_text())["stock"]
+    assert marks == {FARM: {"eggs": {"status": "out_of_stock", "at": "2026-10-15T20:00:00+01:00"}}}
+
+    book.directory.reload(FARM)
+    assert _stock(book, "eggs") == {"out_of_stock"}, "editing the profile doesn't undo the owner's word"
+
+    book, links, chat, relay = start()  # gentifi-bot restarted
+    assert _stock(book, "eggs") == {"out_of_stock"}, "nor does a restart"
+
+    chat.inbox.append(Incoming("button", OWNER, "si:eggs", "2", ack_id="r"))
+    relay.step()
+    assert _stock(book, "eggs") == {"in_stock"}
+    assert json.loads((tmp_path / "stock.json").read_text())["stock"][FARM]["eggs"]["status"] == "in_stock"
+
+
+def test_a_newer_sheet_wins_over_an_older_mark(tmp_path):
+    folder = tmp_path / "profiles"
+    folder.mkdir()
+    profile = json.loads((EXAMPLES / "farm-shop.json").read_text())
+    (folder / "farm-shop.json").write_text(json.dumps(profile))
+    book = RequestBook(Directory.from_folder(folder, clock=Clock()))
+    links = Links(tmp_path / "relay.db")
+    OwnerRelay(book, MockChannel(), links)
+    book.mark_sold_out(FARM, {"eggs", "lamb_half"})
+
+    # The owner updates their sheet afterwards: the eggs are back, with the time it was read
+    for rec in profile["availability"]:
+        if rec.get("offering_id") == "eggs":
+            rec["freshness"]["observed_at"] = "2026-10-15T21:00:00+01:00"
+    (folder / "farm-shop.json").write_text(json.dumps(profile))
+    book.directory.reload(FARM)
+    assert _stock(book, "eggs") == {"in_stock"}, "the sheet changed after the mark"
+    assert _stock(book, "lamb_half") == {"out_of_stock"}, "the lamb's record is older than the mark"
+    assert set(links.stock_marks()[FARM]) == {"lamb_half"}, "the outdated mark is dropped"
+
+    profile["updated_at"] = "2026-10-15T21:30:00+01:00"  # the sheet read again: the toolkit's host drops every older mark
+    (folder / "farm-shop.json").write_text(json.dumps(profile))
+    book.directory.reload(FARM)
+    assert _stock(book, "lamb_half") == {"low"}, "the bot drops it too, so both agree"
+    assert links.stock_marks() == {}
+
+
 def test_an_invite_before_the_folder_is_copied_tells_nobody(tmp_path):
     book = RequestBook(Directory.from_folder(tmp_path))  # the business isn't there yet
     links, chat = Links(), MockChannel()
