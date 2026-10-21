@@ -12,8 +12,8 @@ public: it reaches Telegram by polling, so no port is opened and Caddy is unchan
 | Bot token and Nostr master key (root and `gentifi` only) | `/etc/gentifi-bot/.env` |
 | AI key for reading owners' photos (OpenCode Go; root and `gentifi` only) | `/etc/gentifi-bot/ai-key` |
 | Owners' photos and the drafts read from them | `/var/lib/gentifi-bot/drafts/<business>/<time>/` |
-| Database: owner links, invites, sold-out marks, encrypted Nostr keys | `/var/lib/gentifi-bot/relay.db` |
-| For the toolkit's host: shops being onboarded, and what owners marked sold out | `/var/lib/gentifi-bot/onboarding.json`, `/var/lib/gentifi-bot/stock.json` |
+| Database: owner links, invites, sold-out marks, owners' edits, encrypted Nostr keys | `/var/lib/gentifi-bot/relay.db` |
+| For the toolkit's host: shops being onboarded, what owners marked sold out, and their price and description edits | `/var/lib/gentifi-bot/onboarding.json`, `stock.json`, `edits.json` |
 | Nightly database backups (14 days) | `/srv/gentifi/backups/bot-*.db` |
 | Service | `gentifi-bot` (`journalctl -u gentifi-bot` for its log) |
 

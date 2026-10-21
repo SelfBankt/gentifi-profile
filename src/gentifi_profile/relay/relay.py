@@ -17,6 +17,10 @@ Photos: an owner can send a photo of their price board or menu at any time. It g
 to the team chats with a draft catalogue read from it (drafts.py), for Gentifi to
 check before changing anything.
 
+Edits: /edit lets the owner change an item's price or description. It goes live as
+soon as they confirm (owner-confirmed, like a change to their sheet), the team chats
+hear about it, and it lasts until the sheet changes that same field.
+
 Silence is safe: nothing is confirmed to the customer until the owner taps Accept.
 Gentifi never holds money: payment requests come from the business's own wallet
 or payment link (see payments.py).
@@ -25,10 +29,12 @@ or payment link (see payments.py).
 from __future__ import annotations
 
 import queue
+import re
 import sys
 import threading
 import time
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -36,7 +42,7 @@ from zoneinfo import ZoneInfo
 
 from ..freshness import parse_time
 from ..nostr.mapping import hours_text
-from ..store import RequestBook
+from ..store import RequestBook, file_value
 from .channel import Button, Incoming, Keyboard, OwnerChannel
 from .drafts import Draft, Drafter
 from .links import Links, Merchant
@@ -46,7 +52,9 @@ TICK_SECONDS = 30
 SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$"}
 STOCK_VERBS = {"so", "si", "sd"}  # sold out, back in stock, done: buttons from /soldout and /instock
 SETUP_VERB = "ob"                  # onboarding buttons: ob:ok, ob:edit, ob:ln, ob:link, ob:live, ob:listing, ob:help
-LIVE_COMMANDS = {"/orders", "/soldout", "/instock", "/pause", "/resume"}  # wait until the business is live
+EDIT_VERBS = {"ed", "ep", "en", "ec", "ex"}  # /edit: pick item, price, description, confirm, cancel
+LIVE_COMMANDS = {"/orders", "/soldout", "/instock", "/edit", "/pause", "/resume"}  # wait until the business is live
+MAX_DESCRIPTION = 2000
 HELP = """\
 Gentifi sends you orders and bookings from customers' AI assistants. Tap a button to answer.
 
@@ -54,6 +62,7 @@ Gentifi sends you orders and bookings from customers' AI assistants. Tap a butto
 /listing – what customers' assistants can see
 /soldout – mark items sold out
 /instock – mark items back in stock
+/edit – change a price or description
 /pause – stop new orders (holiday, sold out for the day)
 /resume – take orders again
 /help – this message
@@ -73,6 +82,14 @@ def price_text(offering: dict[str, Any]) -> str:
     per = price.get("per")
     return (("from " if price["type"] == "from" else "") + money(price["amount"]) +
             (f" per {per}" if per and per not in {"item", "each"} else ""))
+
+
+def parse_price(text: str) -> int | None:
+    """A typed price in minor units ("4.50", "£4.5", "4") or None: never guessed."""
+    t = text.strip().replace("£", "").replace(",", "").strip()
+    if not re.fullmatch(r"\d{1,5}(\.\d{1,2})?", t) or (value := round(Decimal(t) * 100)) <= 0:
+        return None
+    return int(value)
 
 
 def money(m: dict[str, Any] | None) -> str:
@@ -98,6 +115,8 @@ class OwnerRelay:
         self.events: queue.Queue[tuple[str, Any, Any]] = queue.Queue()
         self.awaiting_time: dict[str, str] = {}   # chat_id -> reference waiting for a typed time
         self.awaiting_setup: dict[str, str] = {}  # chat_id -> "change", "lightning" or "link" while onboarding
+        self.awaiting_edit: dict[str, tuple[str, str]] = {}           # chat_id -> (offering, field) to type
+        self.pending_edit: dict[str, tuple[str, str, Any]] = {}       # chat_id -> (offering, field, value) to confirm
         self._acting: set[str] = set()            # references whose events the relay itself caused
         self._stop = threading.Event()
         book.listeners.append(self._on_event)
@@ -105,6 +124,8 @@ class OwnerRelay:
         with book.lock:  # what owners marked sold out or back in stock before a restart
             book.directory.on_marks = links.save_stock_marks
             book.directory.restore_marks(links.stock_marks())
+            book.directory.on_edits = links.save_owner_edits  # and prices and descriptions they changed
+            book.directory.restore_edits(links.owner_edits())
 
     # ------------------------------------------------------------ plumbing
 
@@ -325,6 +346,9 @@ class OwnerRelay:
         if verb in STOCK_VERBS:
             self._stock_button(inc, verb, rest)
             return
+        if verb in EDIT_VERBS:
+            self._edit_button(inc, verb, rest)
+            return
         reference, _, arg = rest.partition(":")
         if not self._owns(inc, reference):
             self.channel.ack(inc, "This isn't one of your requests.")
@@ -470,11 +494,15 @@ class OwnerRelay:
             return
         if text.startswith("/"):
             self.awaiting_setup.pop(inc.chat_id, None)
+            self.awaiting_edit.pop(inc.chat_id, None)
         elif inc.chat_id in self.awaiting_setup:
             self._setup_text(inc, merchant, text)
             return
         if merchant.onboarding and command in LIVE_COMMANDS:
             self._send_review(inc.chat_id, merchant.business_id, "You're not live yet. First, check your listing:")
+            return
+        if inc.chat_id in self.awaiting_edit and not text.startswith("/"):
+            self._edit_text(inc, merchant, text)
             return
         if inc.chat_id in self.awaiting_time and not text.startswith("/"):
             reference = self.awaiting_time.pop(inc.chat_id)
@@ -500,6 +528,8 @@ class OwnerRelay:
         elif command in {"/soldout", "/instock"}:
             sold_out = command == "/soldout"
             self.channel.send(inc.chat_id, *self._stock_menu(merchant.business_id, sold_out))
+        elif command == "/edit":
+            self.channel.send(inc.chat_id, *self._edit_menu(merchant.business_id))
         else:
             self.channel.send(inc.chat_id, HELP)
 
@@ -603,6 +633,101 @@ class OwnerRelay:
         text, buttons = self._stock_menu(merchant.business_id, verb == "so")
         self.channel.edit(inc.chat_id, inc.message_id, f"{note}\n\n{text}", buttons)
         self.channel.ack(inc, note.split(".")[0])
+
+    # ------------------------------------------------------------ prices and descriptions
+
+    def _edit_menu(self, business_id: str) -> tuple[str, Keyboard | None]:
+        offerings = self._profile(business_id)["offerings"]
+        if not offerings:
+            return "There's nothing in your listing to change yet.", None
+        return "What would you like to change?", [[Button(o["name"], f"ed:{o['id']}")] for o in offerings]
+
+    def _offering(self, business_id: str, offering_id: str) -> dict[str, Any] | None:
+        return next((o for o in self._profile(business_id)["offerings"] if o["id"] == offering_id), None)
+
+    def _edit_button(self, inc: Incoming, verb: str, offering_id: str) -> None:
+        merchant = self.links.by_chat(inc.chat_id)
+        if merchant is None:
+            self.channel.ack(inc, "This isn't one of your businesses.")
+            return
+        business_id = merchant.business_id
+        self.channel.ack(inc)
+        if verb == "ex":
+            self.pending_edit.pop(inc.chat_id, None)
+            self.awaiting_edit.pop(inc.chat_id, None)
+            self.channel.edit(inc.chat_id, inc.message_id, "Cancelled: nothing changed. Send /edit to change something.")
+            return
+        if verb == "ec":
+            self._confirm_edit(inc, merchant)
+            return
+        offering = self._offering(business_id, offering_id)
+        if offering is None:
+            self.channel.edit(inc.chat_id, inc.message_id, *self._edit_menu(business_id))
+            return
+        if verb == "ed":
+            text = (f"{offering['name']}\nPrice: {price_text(offering)}\n"
+                    f"Description: {offering.get('description') or '(none)'}\n\nWhat would you like to change?")
+            self.channel.edit(inc.chat_id, inc.message_id, text,
+                              [[Button("Price", f"ep:{offering_id}"), Button("Description", f"en:{offering_id}")],
+                               [Button("« Back", "ed:")]])
+            return
+        field = "price" if verb == "ep" else "description"
+        self.awaiting_edit[inc.chat_id] = (offering_id, field)
+        ask = (f"Type the new price for {offering['name']}, like 4.50." if field == "price" else
+               f"Type the new description for {offering['name']}, in a message on its own.")
+        self.channel.edit(inc.chat_id, inc.message_id, ask, None)
+
+    def _edit_text(self, inc: Incoming, merchant: Merchant, text: str) -> None:
+        offering_id, field = self.awaiting_edit[inc.chat_id]
+        offering = self._offering(merchant.business_id, offering_id)
+        if offering is None:
+            self.awaiting_edit.pop(inc.chat_id)
+            self.channel.send(inc.chat_id, "That item isn't in your listing any more. Send /edit to start again.")
+            return
+        if field == "price":
+            value = parse_price(text)
+            if value is None:
+                self.channel.send(inc.chat_id, "That doesn't look like a price. Type it like 4.50, or send /edit to start again.")
+                return
+            currency = (offering["price"].get("amount") or {}).get("currency") or "GBP"
+            new = money({"amount_minor": value, "currency": currency})
+            old = file_value(offering, "price")
+            lines = [f"{offering['name']}: {price_text(offering)} → {new}" if old is not None else
+                     f"{offering['name']}: price on request → {new}"]
+            if old and (value > 2 * old or 2 * value < old):
+                lines.append("That's a big change. Check it's right before you confirm.")
+        else:
+            value = text.strip()
+            if len(value) > MAX_DESCRIPTION:
+                self.channel.send(inc.chat_id, f"That's {len(value)} characters; please keep it under {MAX_DESCRIPTION}.")
+                return
+            lines = [f"New description for {offering['name']}:", value]
+        self.awaiting_edit.pop(inc.chat_id)
+        self.pending_edit[inc.chat_id] = (offering_id, field, value)
+        lines.append("\nCustomers' assistants see it as soon as you confirm.")
+        self.channel.send(inc.chat_id, "\n".join(lines), [[Button("Confirm", "ec:"), Button("Cancel", "ex:")]])
+
+    def _confirm_edit(self, inc: Incoming, merchant: Merchant) -> None:
+        pending = self.pending_edit.pop(inc.chat_id, None)
+        offering = pending and self._offering(merchant.business_id, pending[0])
+        if not offering:
+            self.channel.edit(inc.chat_id, inc.message_id, "That change has expired. Send /edit to make it again.")
+            return
+        offering_id, field, value = pending
+        before = price_text(offering) if field == "price" else (offering.get("description") or "(none)")
+        self.book.edit_offering(merchant.business_id, offering_id, field, value)
+        offering = self._offering(merchant.business_id, offering_id)
+        after = price_text(offering) if field == "price" else offering.get("description", "")
+        self.channel.edit(inc.chat_id, inc.message_id,
+                          f"Done. Customers' assistants now see the new {field} for {offering['name']}"
+                          + (f": {after}." if field == "price" else ".")
+                          + " If you change it in your sheet later, the sheet wins.")
+        name = self._name(merchant.business_id)
+        who = merchant.owner_name or "the owner"
+        if field == "price":
+            self._tell_team(f"{name}: {who} changed the price of {offering['name']}: {before} → {after}.")
+        else:
+            self._tell_team(f"{name}: {who} changed the description of {offering['name']} to:\n{after}")
 
     # ------------------------------------------------------------ onboarding
 
