@@ -212,6 +212,8 @@ bot reloads it (bookings made since start-up are reset) and tells the owner.
 
 ### Run the bot on its own
 
+On the Gentifi VPS it runs as the `gentifi-bot` service: see [docs/vps.md](docs/vps.md).
+
 Only one copy of the bot can poll Telegram at a time, and each copy of the server
 keeps its own requests in memory. So run exactly one server with `--telegram`, over
 HTTP, from the folder with your `.env` (or one below it):
