@@ -45,6 +45,10 @@ class Directory:
         # Businesses the owner has paused (holiday, sold out for the day): hidden from
         # search and declining new requests until resumed.
         self.paused: set[str] = set()
+        # Businesses still being onboarded: invisible to agents (as if they didn't exist)
+        # and not published, until the owner checks the listing and goes live.
+        self.drafts: set[str] = set()
+        self.folder: Path | None = None
         # Called with a business id whenever its listing changes (e.g. to republish it).
         # Keep them quick: they can run while the RequestBook is locked.
         self.listeners: list[Callable[[str], None]] = []
@@ -54,6 +58,7 @@ class Directory:
     @classmethod
     def from_folder(cls, folder: Path, clock: Callable[[], datetime] = utc_now) -> "Directory":
         directory = cls(clock=clock)
+        directory.folder = Path(folder)
         for path in sorted(Path(folder).glob("*.json")):
             try:
                 doc = json.loads(path.read_text("utf-8"))
@@ -69,6 +74,26 @@ class Directory:
             raise ValueError("invalid profile: " + "; ".join(f"{i.path}: {i.message}" for i in errors[:3]))
         # Work on a copy: bookings change availability in memory.
         self.profiles[profile["business"]["id"]] = copy.deepcopy(profile)
+
+    def reload(self, business_id: str) -> dict[str, Any]:
+        """Read the business's profile from the folder again, after Gentifi has edited it.
+        Bookings made since start-up change availability in memory and are lost from it."""
+        if self.folder is None:
+            raise KeyError(f"no profiles folder to reload '{business_id}' from")
+        for path in sorted(self.folder.glob("*.json")):
+            try:
+                doc = json.loads(path.read_text("utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if doc.get("business", {}).get("id") == business_id:
+                self.add(doc)
+                self.changed(business_id)
+                return self.profiles[business_id]
+        raise KeyError(f"no profile for '{business_id}' in {self.folder}")
+
+    def go_live(self, business_id: str) -> None:
+        self.drafts.discard(business_id)
+        self.changed(business_id)
 
     def pause(self, business_id: str) -> None:
         self.paused.add(business_id)
@@ -91,6 +116,12 @@ class Directory:
         except KeyError:
             raise KeyError(f"no business with id '{business_id}'") from None
 
+    def listed(self, business_id: str) -> dict[str, Any]:
+        """The profile as agents may see it: a business still being onboarded doesn't exist yet."""
+        if business_id in self.drafts:
+            raise KeyError(f"no business with id '{business_id}'")
+        return self.get(business_id)
+
     # ------------------------------------------------------------ read tools
 
     def find(self, query: str = "", category: str | None = None, near: dict[str, float] | None = None,
@@ -99,7 +130,7 @@ class Directory:
         results = []
         for p in self.profiles.values():
             b = p["business"]
-            if b["id"] in self.paused:
+            if b["id"] in self.paused or b["id"] in self.drafts:
                 continue
             if category and category.lower() not in {c.lower() for c in b["categories"] + b.get("tags", [])}:
                 continue
@@ -128,12 +159,12 @@ class Directory:
         return results[:limit]
 
     def info(self, business_id: str) -> dict[str, Any]:
-        p = self.get(business_id)
+        p = self.listed(business_id)
         return {"business": p["business"], "policies": p["policies"], "actions": p["actions"],
                 "updated_at": p["updated_at"]}
 
     def catalogue(self, business_id: str, query: str = "") -> list[dict[str, Any]]:
-        p = self.get(business_id)
+        p = self.listed(business_id)
         words = [w for w in query.lower().split() if w]
         out = []
         for o in p["offerings"]:
@@ -146,7 +177,7 @@ class Directory:
 
     def availability(self, business_id: str, offering_id: str | None = None) -> list[dict[str, Any]]:
         """Availability records annotated with freshness advice for agents."""
-        p = self.get(business_id)
+        p = self.listed(business_id)
         offerings = {o["id"]: o for o in p["offerings"]}
         now = self.clock()
         out = []
@@ -207,7 +238,7 @@ class RequestBook:
                 return self._receipt(rid, "failed", message=f"request_id '{rid}' was already used for a different request; use a new request_id")
             return self.by_request[key]
         try:
-            profile = self.directory.get(request["business_id"])
+            profile = self.directory.listed(request["business_id"])
         except KeyError as exc:
             return self._remember(key, fingerprint, self._receipt(rid, "failed", message=str(exc.args[0])))
 

@@ -7,8 +7,9 @@
   stock as `quantity` (0 when sold out, null when not tracked)
 - kind 30402 (NIP-99): one classified listing per offering, including services and
   items priced on enquiry; `status` is `sold` when sold out
-- kind 5 (NIP-09): when the business is paused, a deletion request for the stall,
-  products and listings instead; resuming publishes them again
+- kind 5 (NIP-09): when the business is paused (or back in onboarding after being
+  published), a deletion request for the stall, products and listings instead;
+  resuming or going live publishes them again
 
 Freshness is the heart of the profile, so products and listings carry a
 ["freshness", observed_at, confidence, source] tag and say when stock was checked.
@@ -33,9 +34,9 @@ DAY_NAMES = {"mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu", "fri": "Fri
 
 
 def profile_events(profile: dict[str, Any], created_at: int, paused: bool = False,
-                   pubkey: str | None = None) -> list[dict[str, Any]]:
+                   pubkey: str | None = None, reason: str | None = None) -> list[dict[str, Any]]:
     """Unsigned events for a profile. With paused, the listings are replaced by a deletion
-    request (which needs the business's pubkey to name what it deletes)."""
+    request (which needs the business's pubkey to name what it deletes) giving the reason."""
     business = profile["business"]
     labels = [["L", LABEL], ["l", business["id"], LABEL]]
     events = [_event(KIND_METADATA, created_at, labels, json.dumps(_metadata(business), ensure_ascii=False))]
@@ -48,7 +49,7 @@ def profile_events(profile: dict[str, Any], created_at: int, paused: bool = Fals
     refs = [["a", f"{e['kind']}:{pubkey}:{_d(e)}"] for e in listings]
     kinds = [["k", str(k)] for k in LISTING_KINDS]
     events.append(_event(KIND_DELETION, created_at, refs + kinds + labels,
-                         f"{business['name']} is paused and not taking orders right now."))
+                         reason or f"{business['name']} is paused and not taking orders right now."))
     return events
 
 
@@ -71,7 +72,7 @@ def _metadata(business: dict[str, Any]) -> dict[str, Any]:
 
 
 def _about(business: dict[str, Any]) -> str:
-    parts = [business.get("description", "").strip(), _place(business), _hours(business)]
+    parts = [business.get("description", "").strip(), _place(business), hours_text(business)]
     return "\n\n".join(p for p in parts if p)
 
 
@@ -256,7 +257,7 @@ def _place(business: dict[str, Any]) -> str:
     return ", ".join(p for p in [address.get("locality"), address.get("region")] if p)
 
 
-def _hours(business: dict[str, Any]) -> str:
+def hours_text(business: dict[str, Any]) -> str:
     rows = business.get("opening_hours") or []
     parts = []
     for row in rows:

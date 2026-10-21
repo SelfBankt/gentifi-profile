@@ -182,6 +182,31 @@ def test_publish_then_sold_out_pause_and_resume_reach_the_relay(tmp_path, relay_
     publisher.stop()
 
 
+def test_a_shop_being_onboarded_is_published_only_once_live(tmp_path, relay_url):
+    directory = Directory.from_folder(EXAMPLES)
+    directory.drafts.add(FARM)
+    keys = KeyStore(tmp_path / "relay.db", MASTER)
+    publisher = Publisher(directory, keys, [relay_url])
+    publisher.start()
+    plumber = "gtf_brooksideplumbing"
+    assert wait_for(lambda: keys.pubkey(plumber) and fetch(relay_url, [{"authors": [keys.pubkey(plumber)]}]))
+    assert keys.pubkey(FARM) is None, "nothing signed or sent for a draft"
+    directory.go_live(FARM)
+    assert wait_for(lambda: keys.pubkey(FARM) and len(fetch(relay_url, [{"authors": [keys.pubkey(FARM)]}])) == 10)
+
+    directory.drafts.add(FARM)  # back in onboarding (gentifi-relay invite --onboard): take the listings down
+    directory.changed(FARM)
+
+    def held():
+        return fetch(relay_url, [{"authors": [keys.pubkey(FARM)]}])
+
+    assert wait_for(lambda: {e["kind"] for e in held()} == {0, 5})
+    assert "updating its listing" in next(e for e in held() if e["kind"] == 5)["content"]
+    directory.go_live(FARM)
+    assert wait_for(lambda: len(by_d(held(), 30402)) == 5)
+    publisher.stop()
+
+
 def test_cli_publishes_to_a_local_relay_and_refuses_public_ones(tmp_path, relay_url, monkeypatch, capsys):
     monkeypatch.setenv("GENTIFI_RELAY_DB", str(tmp_path / "relay.db"))
     monkeypatch.setenv("GENTIFI_NOSTR_MASTER_KEY", MASTER.hex())

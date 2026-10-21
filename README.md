@@ -186,6 +186,30 @@ Set up:
    [--payment-link https://...]` prints a one-time link; the owner opens it to connect.
 5. Run the server with the relay on its own, as below, and leave it running.
 
+### Onboard a new business
+
+For a new business, Gentifi writes the profile by hand and the owner checks it in
+Telegram before anything goes live. Once, run `gentifi-relay team` and open the link
+yourself: that chat is then told when an owner connects, asks for a change or goes live.
+
+1. Put the profile in the server's profiles folder.
+2. `gentifi-relay invite <business_id> --onboard` prints the owner's link. The business
+   is hidden from agents (as if it didn't exist) and not published to Nostr (if it was
+   published before, its listings are taken down until it goes live again); a running
+   bot picks this up within 30 seconds, no restart needed.
+3. The owner opens the link and gets a summary: name, address, opening hours, the first
+   three items with prices, collection or delivery. `Looks right` or `Something's wrong`.
+4. `Something's wrong`: the owner types what to change. It's sent to your team chat,
+   saved (`gentifi-relay merchants` shows it) and printed in the bot's window. Edit the
+   profile, then `gentifi-relay review <business_id>`: the bot reloads it and sends the
+   owner the new summary.
+5. `Looks right` asks how customers pay: always in person, and optionally ahead to the
+   owner's own Lightning address (checked before saving) or payment link.
+6. `Go live`: the business appears to agents and is published to Nostr.
+
+`gentifi-relay review` also works for a live business after you edit its profile: the
+bot reloads it (bookings made since start-up are reset) and tells the owner.
+
 ### Run the bot on its own
 
 Only one copy of the bot can poll Telegram at a time, and each copy of the server

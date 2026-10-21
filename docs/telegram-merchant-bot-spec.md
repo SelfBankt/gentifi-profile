@@ -116,7 +116,7 @@ Build the order loop first with one real merchant; onboarding automation and Nos
 1. Telegram bot skeleton: `/start` with invite code, button handling, messaging interface with Telegram adapter.
 2. Order loop: `prepare_order` in the MCP creates a pending order, bot sends the prompt, buttons drive the state machine, expiry job runs.
 3. Payment handoff: LNURL-pay invoice fetch, payment link, pay on collection, `Mark paid`.
-4. Manual onboarding: you fill the profile by hand for the first merchant; bot only does the review and go-live steps.
+4. Manual onboarding: you fill the profile by hand for the first merchant; bot only does the review and go-live steps. *Built 21 Oct 2026 (`gentifi-relay invite --onboard`, `gentifi-relay review`): the business stays hidden until the owner checks the summary, sets payment and taps Go live; "Something's wrong" sends their note to Gentifi's team chat (`gentifi-relay team`).*
 5. Nostr publishing: profile to NIP-15/NIP-99 events, remote signer, Gentifi relay plus public relays. *Built (`nostr/`, `gentifi-nostr`): kind 0, NIP-15 stall and products, NIP-99 listings, NIP-09 deletion on pause, republished on sold out, pause and resume; keys encrypted in the database; tested against a local relay only. Still to do: NIP-46 signer, a Gentifi relay, public relays.*
 6. AI onboarding: photo/link extraction, gap questions, validator loop.
 7. Freshness nudges and quick edits.
