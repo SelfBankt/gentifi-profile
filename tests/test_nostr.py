@@ -171,6 +171,7 @@ def test_publish_then_sold_out_pause_and_resume_reach_the_relay(tmp_path, relay_
     book.mark_sold_out(FARM, {"eggs"})
     assert wait_for(lambda: json.loads(by_d(held(), 30018)["eggs:eggs_12"]["content"])["quantity"] == 0)
     assert len(by_d(held(), 30018)) == 3, "the new version replaced the old one"
+    assert json.loads(by_d(held(), 30018)["eggs:eggs_6"]["content"])["quantity"] == 0, "every size sells out"
 
     directory.pause(FARM)
     assert wait_for(lambda: not by_d(held(), 30402))

@@ -196,6 +196,48 @@ def test_decline_sold_out_marks_items_sold_out(setup):
     assert chat.labels(mid) == []
 
 
+def test_soldout_and_instock_commands(setup):
+    _, book, _, chat, relay, _ = setup()
+    changed = []
+    book.directory.listeners.append(changed.append)
+
+    chat.type(OWNER, "/instock")
+    relay.step()
+    assert chat.last(OWNER).text == "Nothing is marked sold out."
+
+    chat.type(OWNER, "/soldout")
+    relay.step()
+    menu = chat.last(OWNER).message_id
+    assert chat.labels(menu) == ["Free-range eggs", "Seasonal veg box", "Half lamb, butchered", "Done"]
+    chat.press(menu, "Free-range eggs")
+    relay.step()
+    assert chat.acks[-1][1] == "Free-range eggs: sold out"
+    assert chat.labels(menu) == ["Seasonal veg box", "Half lamb, butchered", "Done"]
+    assert changed == [FARM]
+    records = [r for r in book.directory.get(FARM)["availability"] if r["offering_id"] == "eggs"]
+    assert len(records) == 2, "a whole-item record covers the half dozen, which had none"
+    assert all(r["status"] == "out_of_stock" and r["freshness"]["source"] == "owner" for r in records)
+
+    chat.type(OWNER, "/instock")
+    relay.step()
+    menu = chat.last(OWNER).message_id
+    assert chat.labels(menu) == ["Free-range eggs", "Done"]
+    chat.press(menu, "Free-range eggs")
+    relay.step()
+    assert all(r["status"] == "in_stock" and "quantity" not in r for r in records)
+    assert chat.labels(menu) == [] and "Nothing is marked sold out." in chat.messages[menu].text
+    chat.type(OWNER, "/soldout")
+    relay.step()
+    chat.press(chat.last(OWNER).message_id, "Done")
+    relay.step()
+    assert chat.labels(chat.last(OWNER).message_id) == []
+
+    chat.inbox.append(Incoming("button", STRANGER, "so:eggs", "1", ack_id="q"))
+    relay.step()
+    assert chat.acks[-1][1] == "This isn't one of your businesses."
+    assert all(r["status"] == "in_stock" for r in records)
+
+
 def test_back_returns_to_the_original_buttons(setup):
     _, book, _, chat, relay, _ = setup()
     reference, mid = place(book, relay, chat)

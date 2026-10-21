@@ -360,11 +360,24 @@ class RequestBook:
 
     def mark_sold_out(self, business_id: str, offering_ids: set[str]) -> None:
         """Record the owner saying these items are sold out (fresh, owner-confirmed)."""
+        self._set_stock(business_id, offering_ids, "out_of_stock")
+
+    def mark_in_stock(self, business_id: str, offering_ids: set[str]) -> None:
+        """Record the owner saying these items are back. How many isn't known, so quantities are dropped."""
+        self._set_stock(business_id, offering_ids, "in_stock")
+
+    def _set_stock(self, business_id: str, offering_ids: set[str], status: str) -> None:
         with self.lock:
             stamp = {"observed_at": _iso(self.now), "confidence": "confirmed", "source": "owner"}
-            for rec in self.directory.get(business_id)["availability"]:
-                if rec["type"] == "stock" and rec["offering_id"] in offering_ids:
-                    rec["status"] = "out_of_stock"
+            availability = self.directory.get(business_id)["availability"]
+            for offering_id in offering_ids:
+                records = [r for r in availability if r["type"] == "stock" and r["offering_id"] == offering_id]
+                if not any("variant_id" not in r for r in records):
+                    # A whole-item record, so variants without their own record (or untracked items) follow it
+                    records.append({"type": "stock", "offering_id": offering_id})
+                    availability.append(records[-1])
+                for rec in records:
+                    rec["status"] = status
                     rec.pop("quantity", None)
                     rec["freshness"] = dict(stamp)
             self.directory.changed(business_id)

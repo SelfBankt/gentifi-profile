@@ -82,7 +82,7 @@ The bot asks short yes/no questions on a schedule so listings stay true without 
 
 ## Commands, states and data model
 
-Six commands, one order state machine and four tables cover the whole MVP.
+Eight commands, one order state machine and four tables cover the whole MVP.
 
 **Commands**
 
@@ -92,6 +92,7 @@ Six commands, one order state machine and four tables cover the whole MVP.
 | `/listing` | Shows the live profile summary and a link to view it |
 | `/edit` | Starts a guided edit (hours, items, prices, payment methods) |
 | `/orders` | Lists today's open orders with their buttons |
+| `/soldout` / `/instock` | Lists the products as buttons; one tap marks an item sold out or back in stock. *Built 21 Oct 2026* |
 | `/pause` / `/resume` | Hides or restores the listing for agents |
 | `/help` | Short help plus `Talk to a person` |
 

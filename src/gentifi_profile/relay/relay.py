@@ -30,11 +30,14 @@ from .payments import Http, PaymentError, http_get, is_settled, request_invoice
 
 TICK_SECONDS = 30
 SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$"}
+STOCK_VERBS = {"so", "si", "sd"}  # sold out, back in stock, done: buttons from /soldout and /instock
 HELP = """\
 Gentifi sends you orders and bookings from customers' AI assistants. Tap a button to answer.
 
 /orders – what's waiting for you
 /listing – what customers' assistants can see
+/soldout – mark items sold out
+/instock – mark items back in stock
 /pause – stop new orders (holiday, sold out for the day)
 /resume – take orders again
 /help – this message
@@ -265,6 +268,9 @@ class OwnerRelay:
 
     def _button(self, inc: Incoming) -> None:
         verb, _, rest = inc.value.partition(":")
+        if verb in STOCK_VERBS:
+            self._stock_button(inc, verb, rest)
+            return
         reference, _, arg = rest.partition(":")
         if not self._owns(inc, reference):
             self.channel.ack(inc, "This isn't one of your requests.")
@@ -428,6 +434,9 @@ class OwnerRelay:
             self._orders(inc, merchant)
         elif command == "/listing":
             self._listing(inc, merchant)
+        elif command in {"/soldout", "/instock"}:
+            sold_out = command == "/soldout"
+            self.channel.send(inc.chat_id, *self._stock_menu(merchant.business_id, sold_out))
         else:
             self.channel.send(inc.chat_id, HELP)
 
@@ -479,3 +488,45 @@ class OwnerRelay:
         pay.append("in person")
         lines.append("\nCustomers can pay by " + ", ".join(pay) + ".")
         self.channel.send(inc.chat_id, "\n".join(lines))
+
+    # ------------------------------------------------------------ sold out and back in stock
+
+    def _stock_items(self, business_id: str) -> list[tuple[dict[str, Any], bool]]:
+        """Each product with whether it's sold out (every stock record for it says so)."""
+        profile = self._profile(business_id)
+        items = []
+        for o in profile["offerings"]:
+            if o["kind"] != "product":
+                continue
+            records = [r for r in profile["availability"] if r["type"] == "stock" and r["offering_id"] == o["id"]]
+            items.append((o, bool(records) and all(r["status"] == "out_of_stock" for r in records)))
+        return items
+
+    def _stock_menu(self, business_id: str, sold_out: bool) -> tuple[str, Keyboard | None]:
+        """/soldout lists what's still for sale; /instock lists what's sold out. One tap each."""
+        items = [o for o, gone in self._stock_items(business_id) if gone != sold_out]
+        if not items:
+            return ("Nothing is marked sold out." if not sold_out else "Everything is already marked sold out."), None
+        verb = "so" if sold_out else "si"
+        text = "Tap what's sold out:" if sold_out else "Tap what's back in stock:"
+        return text, [[Button(o["name"], f"{verb}:{o['id']}")] for o in items] + [[Button("Done", "sd:")]]
+
+    def _stock_button(self, inc: Incoming, verb: str, offering_id: str) -> None:
+        merchant = self.links.by_chat(inc.chat_id)
+        if merchant is None:
+            self.channel.ack(inc, "This isn't one of your businesses.")
+            return
+        names = {o["id"]: o["name"] for o, _ in self._stock_items(merchant.business_id)}
+        if verb == "sd" or offering_id not in names:
+            self.channel.edit(inc.chat_id, inc.message_id, "Done. Send /soldout or /instock to change stock again.")
+            self.channel.ack(inc)
+            return
+        if verb == "so":
+            self.book.mark_sold_out(merchant.business_id, {offering_id})
+            note = f"{names[offering_id]}: sold out. Customers' assistants now see it as sold out."
+        else:
+            self.book.mark_in_stock(merchant.business_id, {offering_id})
+            note = f"{names[offering_id]}: back in stock. Customers' assistants now see it as in stock."
+        text, buttons = self._stock_menu(merchant.business_id, verb == "so")
+        self.channel.edit(inc.chat_id, inc.message_id, f"{note}\n\n{text}", buttons)
+        self.channel.ack(inc, note.split(".")[0])
