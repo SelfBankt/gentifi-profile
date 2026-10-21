@@ -760,8 +760,9 @@ class OwnerRelay:
                 self.book.directory.reload(business_id)
             except (KeyError, ValueError) as exc:
                 print(f"gentifi-relay: couldn't load the profile for {business_id}: {exc.args[0]}", file=sys.stderr)
-                self._tell_team(f"Couldn't load the profile for {business_id}, so the owner wasn't sent it: "
-                                f"{exc.args[0]}")
+                if merchant.chat_id:  # a fresh invite may come before its folder: nothing to tell yet
+                    self._tell_team(f"Couldn't load the profile for {business_id}, so the owner wasn't sent it: "
+                                    f"{exc.args[0]}")
                 return
         if not merchant.chat_id:
             return
