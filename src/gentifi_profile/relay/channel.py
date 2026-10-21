@@ -22,12 +22,13 @@ Keyboard = list[list[Button]]  # rows of buttons
 @dataclass(frozen=True)
 class Incoming:
     """Something the owner did: pressed a button, or sent text (including /commands)."""
-    kind: str                    # "button" or "text"
+    kind: str                    # "button", "text", "photo", or "file" (one the bot can't read)
     chat_id: str
-    value: str                   # button data, or the message text
+    value: str                   # button data, the message text, a photo's file id, or a file's type
     message_id: str | None = None   # the message the button belongs to
     ack_id: str | None = None       # channel-specific id to acknowledge a button press
     name: str | None = None         # the sender's display name, when known
+    mime: str = "image/jpeg"        # a photo's type (Telegram's own photos are JPEG)
 
 
 class OwnerChannel(Protocol):
@@ -43,6 +44,12 @@ class OwnerChannel(Protocol):
     def ack(self, incoming: Incoming, note: str | None = None) -> None:
         """Acknowledge a button press (stops the app's loading spinner)."""
 
+    def send_photo(self, chat_id: str, photo: str, caption: str = "") -> str:
+        """Pass on a photo the channel received (by its id); returns the message id."""
+
+    def download(self, file_id: str) -> bytes:
+        """The bytes of a photo an owner sent."""
+
 
 @dataclass
 class Sent:
@@ -50,6 +57,7 @@ class Sent:
     message_id: str
     text: str
     buttons: Keyboard | None
+    photo: str | None = None
 
 
 @dataclass
@@ -58,6 +66,7 @@ class MockChannel:
     messages: dict[str, Sent] = field(default_factory=dict)
     inbox: list[Incoming] = field(default_factory=list)
     acks: list[tuple[Incoming, str | None]] = field(default_factory=list)
+    files: dict[str, bytes] = field(default_factory=dict)
     _next: int = 1
 
     def send(self, chat_id: str, text: str, buttons: Keyboard | None = None) -> str:
@@ -76,6 +85,14 @@ class MockChannel:
     def ack(self, incoming: Incoming, note: str | None = None) -> None:
         self.acks.append((incoming, note))
 
+    def send_photo(self, chat_id: str, photo: str, caption: str = "") -> str:
+        mid = self.send(chat_id, caption)
+        self.messages[mid].photo = photo
+        return mid
+
+    def download(self, file_id: str) -> bytes:
+        return self.files[file_id]
+
     # ---- helpers for tests
 
     def last(self, chat_id: str | None = None) -> Sent:
@@ -92,3 +109,9 @@ class MockChannel:
 
     def type(self, chat_id: str, text: str, name: str | None = "Owner") -> None:
         self.inbox.append(Incoming("text", chat_id, text, name=name))
+
+    def photo(self, chat_id: str, data: bytes, name: str | None = "Owner") -> str:
+        file_id = f"file{len(self.files) + 1}"
+        self.files[file_id] = data
+        self.inbox.append(Incoming("photo", chat_id, file_id, name=name))
+        return file_id

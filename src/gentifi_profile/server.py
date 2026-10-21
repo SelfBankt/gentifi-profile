@@ -169,6 +169,7 @@ def start_telegram_relay(book: RequestBook) -> Handoff:
     """Start the owner relay; returns the hand-off the toolkit's confirmation page uses."""
     from .relay import Links, OwnerRelay
     from .relay.cli import db_path, telegram_channel
+    from .relay.drafts import Drafter
     from .relay.handoff import Handoff, load_secret, secret_file
     from .relay.telegram import TelegramError
 
@@ -178,7 +179,11 @@ def start_telegram_relay(book: RequestBook) -> Handoff:
     except TelegramError as exc:
         sys.exit(f"gentifi-mcp: can't start the Telegram relay: {exc}")
     links = Links(db_path())
-    relay = OwnerRelay(book, channel, links, bot_username=username)
+    drafter = Drafter.from_env(db_path().parent / "drafts")
+    relay = OwnerRelay(book, channel, links, bot_username=username, drafter=drafter)
+    if drafter is None:
+        print("gentifi-mcp: photos from owners go to the team undrafted "
+              "(set GENTIFI_AI_MODEL, with the toolkit in GENTIFI_TOOLKIT, to draft them)", file=sys.stderr)
     threading.Thread(target=relay.run, name="gentifi-relay", daemon=True).start()
     # stderr only: with the stdio transport, stdout carries MCP messages
     print(f"gentifi-mcp: owner relay running as @{username}", file=sys.stderr)

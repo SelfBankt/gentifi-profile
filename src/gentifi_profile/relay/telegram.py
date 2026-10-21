@@ -17,6 +17,7 @@ from typing import Any
 from .channel import Incoming, Keyboard
 
 API = "https://api.telegram.org"
+PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp"}  # what the drafting model can read
 
 
 class TelegramError(RuntimeError):
@@ -28,6 +29,7 @@ class TelegramChannel:
         if not token or ":" not in token:
             raise TelegramError("TELEGRAM_BOT_TOKEN is missing or doesn't look like a bot token")
         self._base = f"{api}/bot{token}/"
+        self._files = f"{api}/file/bot{token}/"
         self._offset = 0
         self.username: str | None = None
 
@@ -76,6 +78,21 @@ class TelegramChannel:
             if "message is not modified" not in str(exc):
                 raise
 
+    def send_photo(self, chat_id: str, photo: str, caption: str = "") -> str:
+        """Send a photo the bot has already received, by its Telegram file id (nothing is re-uploaded)."""
+        msg = self._call("sendPhoto", chat_id=chat_id, photo=photo, caption=caption[:1024] or None)
+        return str(msg["message_id"])
+
+    def download(self, file_id: str) -> bytes:
+        """A file an owner sent (Telegram lets bots fetch up to 20 MB)."""
+        path = self._call("getFile", file_id=file_id)["file_path"]
+        try:
+            with urllib.request.urlopen(self._files + path, timeout=60) as resp:
+                return resp.read()
+        except urllib.error.URLError as exc:
+            # Never echo the URL: it contains the token.
+            raise TelegramError(f"getFile: download failed ({getattr(exc, 'code', None) or exc.reason})") from None
+
     def poll(self, timeout: int) -> list[Incoming]:
         try:
             updates = self._call("getUpdates", http_timeout=timeout + 10, offset=self._offset,
@@ -94,12 +111,21 @@ class TelegramChannel:
                 if chat is not None:
                     out.append(Incoming("button", str(chat), q.get("data", ""), str(msg.get("message_id")),
                                         ack_id=q["id"], name=q.get("from", {}).get("first_name")))
-            elif "message" in u and "text" in u["message"]:
+            elif "message" in u:
                 m = u["message"]
                 if m.get("chat", {}).get("type") != "private":
                     continue  # owners talk to the bot one to one
-                out.append(Incoming("text", str(m["chat"]["id"]), m["text"],
-                                    name=m.get("from", {}).get("first_name")))
+                chat, name = str(m["chat"]["id"]), m.get("from", {}).get("first_name")
+                document = m.get("document") or {}
+                if "text" in m:
+                    out.append(Incoming("text", chat, m["text"], name=name))
+                elif m.get("photo"):  # sizes, smallest first: take the largest
+                    out.append(Incoming("photo", chat, m["photo"][-1]["file_id"], name=name))
+                elif document.get("mime_type") in PHOTO_TYPES:  # a photo sent as a file, uncompressed
+                    out.append(Incoming("photo", chat, document["file_id"], name=name,
+                                        mime=document["mime_type"]))
+                elif document:
+                    out.append(Incoming("file", chat, document.get("mime_type", ""), name=name))
         return out
 
     def ack(self, incoming: Incoming, note: str | None = None) -> None:

@@ -10,6 +10,8 @@ public: it reaches Telegram by polling, so no port is opened and Caddy is unchan
 | Business profiles the bot serves | `/srv/gentifi/profiles`, and `gentifi-profile.json` in each toolkit business folder |
 | Secret the toolkit's host uses to hand orders to the bot | `/var/lib/gentifi-bot/handoff-secret` (made on first start) |
 | Bot token and Nostr master key (root and `gentifi` only) | `/etc/gentifi-bot/.env` |
+| AI key for reading owners' photos (OpenCode Go; root and `gentifi` only) | `/etc/gentifi-bot/ai-key` |
+| Owners' photos and the drafts read from them | `/var/lib/gentifi-bot/drafts/<business>/<time>/` |
 | Database: owner links, invites, encrypted Nostr keys | `/var/lib/gentifi-bot/relay.db` |
 | Nightly database backups (14 days) | `/srv/gentifi/backups/bot-*.db` |
 | Service | `gentifi-bot` (`journalctl -u gentifi-bot` for its log) |
@@ -83,6 +85,21 @@ the Mac.
    Without it Gentifi can't sign for its businesses again. It's the
    `GENTIFI_NOSTR_MASTER_KEY` line in `/etc/gentifi-bot/.env`; the database backups
    don't include it.
+
+## Photos from owners
+
+Owners can send the bot a photo of their price board or menu. It goes to your team chat,
+and the bot drafts a catalogue from it with the toolkit's `gentifi draft`, using the
+model in the service file (`GENTIFI_AI_MODEL`) and the key in `/etc/gentifi-bot/ai-key`.
+Copy the key from the Mac once, without showing it:
+
+```bash
+ssh root@mcp.gentifi.com 'install -m 640 -o root -g gentifi /dev/stdin /etc/gentifi-bot/ai-key' < ~/.gentifi/ai-key
+```
+
+The draft (catalogue.csv, notes.md and the photo) is saved under
+`/var/lib/gentifi-bot/drafts/<business>/<time>/`. Check every name and price against the
+photo before using it; nothing changes for the shop until you do.
 
 ## Testing from the Mac
 

@@ -223,6 +223,15 @@ asks for. With `--profiles <toolkit businesses folder>` the server also reads th
 `gentifi-profile.json` the host writes for each business, and picks up changes within
 30 seconds.
 
+### Photos of prices
+
+An owner linked to the bot can send it a photo of their price board or menu (or a
+screenshot). The bot thanks them, passes the photo to Gentifi's team chats, and, with the
+toolkit installed (`GENTIFI_TOOLKIT`) and a model set (`GENTIFI_AI_MODEL`, plus the toolkit's
+AI key settings), drafts a catalogue from it with `gentifi draft` and sends the team the
+items, prices and anything to check (`src/gentifi_profile/relay/drafts.py`). Nothing changes
+for the business until someone has checked the draft.
+
 ### Run the bot on its own
 
 On the Gentifi VPS it runs as the `gentifi-bot` service: see [docs/vps.md](docs/vps.md).

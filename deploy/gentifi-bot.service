@@ -10,6 +10,11 @@ WorkingDirectory=/srv/gentifi/profile
 # TELEGRAM_BOT_TOKEN and GENTIFI_NOSTR_MASTER_KEY (root:gentifi, 640)
 EnvironmentFile=/etc/gentifi-bot/.env
 Environment=GENTIFI_RELAY_DB=/var/lib/gentifi-bot/relay.db
+# Owners' photos of their prices are drafted with the toolkit's `gentifi draft` (relay/drafts.py);
+# without the key file the drafts fail and the team is told
+Environment=GENTIFI_TOOLKIT=/srv/gentifi/toolkit
+Environment=GENTIFI_AI_MODEL=kimi-k3
+Environment=GENTIFI_AI_KEY_FILE=/etc/gentifi-bot/ai-key
 # --profiles twice: Gentifi's own folder, and the profiles the toolkit's host writes for each business
 ExecStart=/srv/gentifi/profile/.venv/bin/gentifi-mcp --profiles /srv/gentifi/profiles --profiles /srv/gentifi/businesses --telegram --transport streamable-http --port 8765 --answer-minutes 120
 Restart=on-failure
