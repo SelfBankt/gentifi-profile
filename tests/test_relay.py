@@ -421,6 +421,34 @@ def test_something_wrong_goes_to_gentifi_and_the_fixed_listing_comes_back(onboar
     assert links.merchant(FARM).lightning_address is None
 
 
+def test_the_gentifi_team_hears_about_change_requests_and_go_lives(onboarding):
+    _, book, links, chat, relay, code = onboarding
+    TEAM = "3003"
+    team_code = links.team_invite()
+    assert links.redeem(team_code, STRANGER, None) is None, "a team link can't take over a business"
+    chat.type(TEAM, f"/start {team_code}", name="Finn")
+    relay.step()
+    assert chat.last(TEAM).text.startswith("You're on the Gentifi team.")
+    assert not links.redeem_team(team_code, STRANGER, None), "works once"
+    assert not links.redeem_team(code, STRANGER, None), "an owner's link doesn't join the team"
+
+    chat.type(OWNER, f"/start {code}", name="Jo")
+    relay.step()
+    assert chat.last(TEAM).text == "Hollowbrook Farm Shop: Jo connected and is checking their listing."
+    press_last(chat, relay, "Something's wrong")
+    chat.type(OWNER, "We're open Wednesdays too")
+    relay.step()
+    alert = chat.last(TEAM).text
+    assert alert.startswith("Hollowbrook Farm Shop asked for a change:") and "We're open Wednesdays too" in alert
+    assert alert.endswith("gentifi-relay review gtf_hollowbrookfarm")
+
+    links.request_review(FARM)
+    relay.tick()
+    press_last(chat, relay, "Looks right")
+    press_last(chat, relay, "Go live")
+    assert chat.last(TEAM).text == "Hollowbrook Farm Shop is live."
+
+
 def test_links_from_before_onboarding_are_upgraded_and_stay_live(tmp_path):
     import sqlite3
 
@@ -428,11 +456,16 @@ def test_links_from_before_onboarding_are_upgraded_and_stay_live(tmp_path):
     old = sqlite3.connect(db)
     old.executescript("CREATE TABLE merchants (business_id TEXT PRIMARY KEY, chat_id TEXT UNIQUE, owner_name TEXT, "
                       "lightning_address TEXT, payment_link TEXT, linked_at TEXT);"
-                      "INSERT INTO merchants (business_id, chat_id) VALUES ('gtf_hollowbrookfarm', '1001');")
+                      "CREATE TABLE invites (code TEXT PRIMARY KEY, business_id TEXT NOT NULL, "
+                      "created_at TEXT NOT NULL, used_at TEXT);"
+                      "INSERT INTO merchants (business_id, chat_id) VALUES ('gtf_hollowbrookfarm', '1001');"
+                      "INSERT INTO invites VALUES ('AbC123dEf456', 'gtf_hollowbrookfarm', '2026-10-20', NULL);")
     old.commit()
     old.close()
-    merchant = Links(db).merchant(FARM)
+    links = Links(db)
+    merchant = links.merchant(FARM)
     assert merchant.chat_id == OWNER and merchant.status == "live" and not merchant.onboarding
+    assert links.redeem("AbC123dEf456", "4004", None) == FARM, "an unused invite from before still works"
 
 
 # ------------------------------------------------------------ payments

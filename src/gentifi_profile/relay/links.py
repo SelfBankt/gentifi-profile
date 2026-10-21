@@ -31,9 +31,15 @@ CREATE TABLE IF NOT EXISTS merchants (
 );
 CREATE TABLE IF NOT EXISTS invites (
     code        TEXT PRIMARY KEY,
-    business_id TEXT NOT NULL,
+    business_id TEXT NOT NULL,                 -- '' for a team invite
     created_at  TEXT NOT NULL,
-    used_at     TEXT
+    used_at     TEXT,
+    role        TEXT NOT NULL DEFAULT 'owner'  -- 'owner', or 'team' for Gentifi's own chats
+);
+CREATE TABLE IF NOT EXISTS team (
+    chat_id     TEXT PRIMARY KEY,              -- told about change requests and go-lives
+    name        TEXT,
+    linked_at   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS prompts (
     reference   TEXT PRIMARY KEY,
@@ -48,10 +54,11 @@ CREATE TABLE IF NOT EXISTS prompts (
 
 # Columns added after the first release, for databases made before them
 MIGRATIONS = {
-    "status": "ALTER TABLE merchants ADD COLUMN status TEXT NOT NULL DEFAULT 'live'",
-    "review_requested": "ALTER TABLE merchants ADD COLUMN review_requested INTEGER NOT NULL DEFAULT 0",
-    "change_request": "ALTER TABLE merchants ADD COLUMN change_request TEXT",
-    "change_requested_at": "ALTER TABLE merchants ADD COLUMN change_requested_at TEXT",
+    ("merchants", "status"): "ALTER TABLE merchants ADD COLUMN status TEXT NOT NULL DEFAULT 'live'",
+    ("merchants", "review_requested"): "ALTER TABLE merchants ADD COLUMN review_requested INTEGER NOT NULL DEFAULT 0",
+    ("merchants", "change_request"): "ALTER TABLE merchants ADD COLUMN change_request TEXT",
+    ("merchants", "change_requested_at"): "ALTER TABLE merchants ADD COLUMN change_requested_at TEXT",
+    ("invites", "role"): "ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'owner'",
 }
 MERCHANT_COLUMNS = "business_id, chat_id, owner_name, lightning_address, payment_link, status, change_request"
 
@@ -91,9 +98,8 @@ class Links:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript(SCHEMA)
-            have = {row[1] for row in self._db.execute("PRAGMA table_info(merchants)")}
-            for column, sql in MIGRATIONS.items():
-                if column not in have:
+            for (table, column), sql in MIGRATIONS.items():
+                if column not in {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}:
                     self._db.execute(sql)
             self._db.commit()
 
@@ -152,12 +158,16 @@ class Links:
 
     # ------------------------------------------------------------ invites
 
+    @staticmethod
+    def _code() -> str:
+        # 12 letters and digits: fits Telegram's start parameter, and no _ or - for chat
+        # apps to treat as formatting and drop when the link is shown or copied
+        return "".join(secrets.choice(INVITE_ALPHABET) for _ in range(12))
+
     def invite(self, business_id: str, onboarding: bool = False) -> str:
         """A one-time code the owner uses with /start to link their chat to the business.
         With onboarding, the business stays hidden until the owner checks it and goes live."""
-        # 12 letters and digits: fits Telegram's start parameter, and no _ or - for chat
-        # apps to treat as formatting and drop when the link is shown or copied
-        code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(12))
+        code = self._code()
         self.configure(business_id)
         if onboarding:
             self.set_status(business_id, "onboarding")
@@ -169,8 +179,8 @@ class Links:
     def redeem(self, code: str, chat_id: str, owner_name: str | None) -> str | None:
         """Link a chat using an unused invite code. Returns the business id, or None."""
         with self._lock, self._db:
-            row = self._db.execute("SELECT business_id FROM invites WHERE code = ? AND used_at IS NULL",
-                                   (code,)).fetchone()
+            row = self._db.execute("SELECT business_id FROM invites WHERE code = ? AND used_at IS NULL "
+                                   "AND role = 'owner'", (code,)).fetchone()
             if row is None:
                 return None
             business_id = row[0]
@@ -180,6 +190,28 @@ class Links:
                              "WHERE business_id = ?", (chat_id, owner_name, _now(), business_id))
             self._db.execute("UPDATE invites SET used_at = ? WHERE code = ?", (_now(), code))
             return business_id
+
+    # ------------------------------------------------------------ Gentifi team
+
+    def team_invite(self) -> str:
+        """A one-time code that adds a chat to the Gentifi team (told about change requests)."""
+        code = self._code()
+        self._q("INSERT INTO invites (code, business_id, created_at, role) VALUES (?, '', ?, 'team')", code, _now())
+        return code
+
+    def redeem_team(self, code: str, chat_id: str, name: str | None) -> bool:
+        with self._lock, self._db:
+            if self._db.execute("SELECT 1 FROM invites WHERE code = ? AND used_at IS NULL AND role = 'team'",
+                                (code,)).fetchone() is None:
+                return False
+            self._db.execute("INSERT OR REPLACE INTO team (chat_id, name, linked_at) VALUES (?, ?, ?)",
+                             (chat_id, name, _now()))
+            self._db.execute("UPDATE invites SET used_at = ? WHERE code = ?", (_now(), code))
+            return True
+
+    def team(self) -> list[tuple[str, str | None]]:
+        """(chat id, name) for each team chat."""
+        return self._q("SELECT chat_id, name FROM team ORDER BY linked_at")
 
     # ------------------------------------------------------------ prompts
 

@@ -70,6 +70,7 @@ gentifi-relay check                     # Telegram token from .env works?
 gentifi-relay invite gtf_hollowbrookfarm --lightning-address shop@wallet.com
 gentifi-relay invite gtf_newshop --onboard   # hidden until the owner checks the listing and goes live
 gentifi-relay review gtf_newshop             # after editing its profile: the bot reloads it, shows the owner
+gentifi-relay team                           # link Gentifi's own chat: told about change requests, go-lives
 gentifi-mcp --profiles examples --telegram --transport streamable-http  # one copy only; see README
 gentifi-nostr init && gentifi-nostr relay                              # Nostr: master key, test relay
 gentifi-nostr publish gtf_hollowbrookfarm --profiles examples --relay ws://127.0.0.1:7777
@@ -99,7 +100,8 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
   the user explicitly allows public relays; directory changes (sold out, pause,
   resume) go through `Directory.changed` so they are republished.
 - Onboarding businesses are in `Directory.drafts`: agents can't see them (`Directory.listed`),
-  the publisher skips them, and only the owner's Go live (`Directory.go_live`) shows them.
+  the publisher publishes nothing for them (or takes down what it published before), and
+  only the owner's Go live (`Directory.go_live`) shows them.
 
 ## Publishing
 

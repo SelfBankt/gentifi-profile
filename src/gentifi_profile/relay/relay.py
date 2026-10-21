@@ -9,8 +9,9 @@ is waiting for.
 
 Onboarding (invite --onboard): the business stays hidden from agents while the owner
 checks a summary of the listing Gentifi set up, says how customers can pay, and taps
-Go live. "Something's wrong" sends their note to Gentifi; `gentifi-relay review`
-reloads the edited profile and shows it to them again.
+Go live. "Something's wrong" sends their note to Gentifi's team chats (linked
+with `gentifi-relay team`); `gentifi-relay review` reloads the edited profile and
+shows it to them again.
 
 Silence is safe: nothing is confirmed to the customer until the owner taps Accept.
 Gentifi never holds money: payment requests come from the business's own wallet
@@ -479,9 +480,15 @@ class OwnerRelay:
             self.channel.send(inc.chat_id, HELP)
 
     def _start(self, inc: Incoming, code: str) -> None:
+        if code and self.links.redeem_team(code, inc.chat_id, inc.name):
+            self.channel.send(inc.chat_id, "You're on the Gentifi team. I'll message you here when an owner asks "
+                                           "for a change to their listing, connects, or goes live.")
+            return
         if code:
             business_id = self.links.redeem(code, inc.chat_id, inc.name)
             if business_id and self.links.merchant(business_id).onboarding:
+                self._tell_team(f"{self._name(business_id)}: {inc.name or 'the owner'} connected and is "
+                                "checking their listing.")
                 self._welcome(inc, business_id)
                 return
             if business_id:
@@ -575,6 +582,18 @@ class OwnerRelay:
 
     # ------------------------------------------------------------ onboarding
 
+    def _name(self, business_id: str) -> str:
+        profiles = self.book.directory.profiles
+        return profiles[business_id]["business"]["name"] if business_id in profiles else business_id
+
+    def _tell_team(self, text: str) -> None:
+        """Let Gentifi know, in each team chat (gentifi-relay team)."""
+        for chat_id, _ in self.links.team():
+            try:
+                self.channel.send(chat_id, text)
+            except Exception as exc:  # the owner's flow carries on regardless
+                print(f"gentifi-relay: couldn't tell team chat {chat_id}: {exc!r}", file=sys.stderr)
+
     def _welcome(self, inc: Incoming, business_id: str) -> None:
         if business_id not in self.book.directory.profiles:
             self.channel.send(inc.chat_id, "Connected. Gentifi is still setting up your listing; "
@@ -667,6 +686,8 @@ class OwnerRelay:
             self.awaiting_setup.pop(inc.chat_id)
             self.links.save_change_request(merchant.business_id, text)
             print(f"gentifi-relay: {merchant.business_id} asked for a change: {text}", file=sys.stderr)
+            self._tell_team(f"{self._name(merchant.business_id)} asked for a change:\n\n\"{text}\"\n\n"
+                            f"Edit the profile, then run: gentifi-relay review {merchant.business_id}")
             self.channel.send(inc.chat_id, "Thanks. Gentifi will make the change and send you your listing "
                                            "to check again.")
             return
@@ -701,6 +722,7 @@ class OwnerRelay:
             self.channel.edit(inc.chat_id, inc.message_id, "Payment set up.", None)
         name = self._profile(merchant.business_id)["business"]["name"]
         print(f"gentifi-relay: {merchant.business_id} is live", file=sys.stderr)
+        self._tell_team(f"{name} is live.")
         self.channel.send(inc.chat_id, f"You're live. Customers' AI assistants can now find {name}. "
                                        "When one sends an order, I'll message you here.",
                           [[Button("See my listing", f"{SETUP_VERB}:listing"), Button("Help", f"{SETUP_VERB}:help")]])
@@ -717,6 +739,8 @@ class OwnerRelay:
                 self.book.directory.reload(business_id)
             except (KeyError, ValueError) as exc:
                 print(f"gentifi-relay: couldn't load the profile for {business_id}: {exc.args[0]}", file=sys.stderr)
+                self._tell_team(f"Couldn't load the profile for {business_id}, so the owner wasn't sent it: "
+                                f"{exc.args[0]}")
                 return
         if not merchant.chat_id:
             return

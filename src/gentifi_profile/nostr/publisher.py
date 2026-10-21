@@ -28,17 +28,25 @@ class Publisher:
 
     def events(self, business_id: str) -> list[dict[str, Any]]:
         """Signed events for the business as it is now. Each call gets a later created_at
-        than the last, so relays replace the previous version (and a resume outdates a pause)."""
+        than the last, so relays replace the previous version (and a resume outdates a pause).
+        A business being onboarded has nothing published, or, if it was published before,
+        its listings taken down until it goes live again."""
         with self.lock:
             profile = copy.deepcopy(self.directory.get(business_id))
             paused = business_id in self.directory.paused
+            draft = business_id in self.directory.drafts
+        if draft and self.keys.pubkey(business_id) is None:
+            return []  # never published, and no key made until it goes live
         signer = self.keys.signer(business_id)
         created_at = max(int(self.clock()), self._last.get(business_id, 0) + 1)
         self._last[business_id] = created_at
-        return [finish(e, signer) for e in profile_events(profile, created_at, paused, signer.pubkey)]
+        reason = f"{profile['business']['name']} is updating its listing and isn't taking orders right now." \
+            if draft else None
+        return [finish(e, signer) for e in profile_events(profile, created_at, paused or draft, signer.pubkey, reason)]
 
     def publish(self, business_id: str) -> dict[str, dict[str, tuple[bool, str]]]:
-        return publish(self.events(business_id), self.relays)
+        events = self.events(business_id)
+        return publish(events, self.relays) if events else {}
 
     # ------------------------------------------------------------ background
 
@@ -54,8 +62,6 @@ class Publisher:
 
     def _run(self) -> None:
         while (business_id := self._queue.get()) is not None:
-            if business_id in self.directory.drafts:
-                continue  # not live yet: nothing to publish
             try:
                 results = self.publish(business_id)
             except Exception as exc:  # keep publishing the others

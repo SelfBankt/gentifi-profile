@@ -5,6 +5,7 @@
     gentifi-relay invite gtf_newshop --onboard            # hidden until the owner checks it and goes live
     gentifi-relay review gtf_newshop                      # after editing its profile: show the owner again
     gentifi-relay merchants                               # who is linked, live or not, and how they take payment
+    gentifi-relay team                                    # link your own chat to hear about change requests
 
 The relay itself runs inside the MCP server: gentifi-mcp --telegram ...
 The bot token is read from TELEGRAM_BOT_TOKEN, or from a .env file in this
@@ -76,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     pay.add_argument("--lightning-address", help="Lightning address ('' to remove)")
     pay.add_argument("--payment-link", help="payment link ('' to remove)")
     sub.add_parser("merchants", help="list businesses and their linked chats")
+    sub.add_parser("team", help="make a one-time link that adds your Telegram to the Gentifi team: the bot "
+                                "tells you when an owner asks for a change, connects or goes live")
     args = parser.parse_args(argv)
 
     try:
@@ -87,16 +90,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.lightning_address:
                 check_address(args.lightning_address)
             links.configure(args.business_id, args.lightning_address, args.payment_link)
-        if args.command == "invite":
-            code = links.invite(args.business_id, onboarding=args.onboard)
+        if args.command in {"invite", "team"}:
+            code = links.invite(args.business_id, onboarding=args.onboard) if args.command == "invite" \
+                else links.team_invite()
+            who = f"the owner of {args.business_id}" if args.command == "invite" else "yourself (or a teammate)"
             try:
                 username = telegram_channel().check()
-                print(f"Send this link to the owner of {args.business_id} (works once):\n"
-                      f"https://t.me/{username}?start={code}")
+                print(f"Open this link as {who} (works once):\nhttps://t.me/{username}?start={code}")
             except TelegramError as exc:
-                print(f"Invite code for {args.business_id}: {code}\n"
-                      f"(Couldn't reach the bot to build the link: {exc}. The owner can send "
-                      f"'/start {code}' to the bot instead.)")
+                print(f"Invite code: {code}\n(Couldn't reach the bot to build the link: {exc}. "
+                      f"Send '/start {code}' to the bot instead.)")
+            if args.command == "team" and links.team():
+                print("Already on the team: " + ", ".join(name or chat for chat, name in links.team()))
         elif args.command == "review":
             m = links.merchant(args.business_id)
             if m is None:

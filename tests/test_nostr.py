@@ -193,6 +193,17 @@ def test_a_shop_being_onboarded_is_published_only_once_live(tmp_path, relay_url)
     assert keys.pubkey(FARM) is None, "nothing signed or sent for a draft"
     directory.go_live(FARM)
     assert wait_for(lambda: keys.pubkey(FARM) and len(fetch(relay_url, [{"authors": [keys.pubkey(FARM)]}])) == 10)
+
+    directory.drafts.add(FARM)  # back in onboarding (gentifi-relay invite --onboard): take the listings down
+    directory.changed(FARM)
+
+    def held():
+        return fetch(relay_url, [{"authors": [keys.pubkey(FARM)]}])
+
+    assert wait_for(lambda: {e["kind"] for e in held()} == {0, 5})
+    assert "updating its listing" in next(e for e in held() if e["kind"] == 5)["content"]
+    directory.go_live(FARM)
+    assert wait_for(lambda: len(by_d(held(), 30402)) == 5)
     publisher.stop()
 
 
