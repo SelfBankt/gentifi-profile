@@ -172,7 +172,9 @@ Please answer by 22:00 today.
 - **Suggest another time** declines with the suggestion, so the agent checks with
   the customer and sends a new request. The customer still confirms what is booked.
 - **No answer** by `confirm_by` expires the request; nothing is confirmed.
-- Owners can send `/orders`, `/listing`, `/pause`, `/resume` and `/help`.
+- Owners can send `/orders`, `/listing`, `/soldout`, `/instock`, `/pause`, `/resume` and `/help`.
+  `/soldout` and `/instock` list the shop's products as buttons: one tap marks an item sold
+  out or back in stock (every size of it), owner-confirmed and fresh.
 
 Set up:
 
