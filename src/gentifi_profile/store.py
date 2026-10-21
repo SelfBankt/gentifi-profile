@@ -24,6 +24,10 @@ from .checks import SLOT_KINDS, action_capability, check_document, request_issue
 from .freshness import BOOK_INSTANTLY, assess, parse_time, utc_now
 
 DEFAULT_SLA_MINUTES = 60
+# A customer's name, contact details and note are forgotten when their request ends
+# (declined, expired, cancelled, or collected/delivered), and after this long at most
+KEEP_CUSTOMER_DAYS = 7
+ENDED = {"declined", "expired", "cancelled", "failed"}
 
 
 def _iso(dt: datetime) -> str:
@@ -336,7 +340,10 @@ class RequestBook:
             receipt = self._receipt(rid, "pending_confirmation", reference=reference, total=total,
                                     confirm_by=_iso(self.now + timedelta(minutes=sla)),
                                     message=f"Sent to {name}. They will confirm within {sla} minutes.")
-        self.bookings[reference] = {"request": request, "receipt": receipt, "business_id": profile["business"]["id"]}
+        self.bookings[reference] = {"request": request, "receipt": receipt, "business_id": profile["business"]["id"],
+                                    "created_at": self.now}
+        if receipt["status"] in ENDED:
+            self._forget(self.bookings[reference])
         if receipt["status"] == "pending_confirmation":
             self._emit("pending", reference)
         return receipt
@@ -356,7 +363,7 @@ class RequestBook:
             slots = {r["slot_id"]: r for r in profile["availability"] if r["type"] == "slot"}
             self._take_places(booking["request"], slots, release=True)
         receipt = self._receipt(rid, "cancelled", reference=request["reference"], message="Cancelled.")
-        booking["receipt"] = {**receipt, "request_id": booking["receipt"]["request_id"]}
+        self._settle(booking, {**receipt, "request_id": booking["receipt"]["request_id"]})
         self._emit("cancelled", request["reference"])
         return receipt
 
@@ -391,6 +398,10 @@ class RequestBook:
                     self._settle(booking, receipt)
                     expired.append(reference)
                     self._emit("expired", reference)
+            oldest = self.now - timedelta(days=KEEP_CUSTOMER_DAYS)
+            for booking in self.bookings.values():
+                if booking.get("created_at", self.now) <= oldest:
+                    self._forget(booking)
         return expired
 
     def set_payment(self, reference: str, payment: dict[str, Any], message: str | None = None) -> dict[str, Any]:
@@ -455,6 +466,23 @@ class RequestBook:
     def _settle(self, booking: dict[str, Any], receipt: dict[str, Any]) -> None:
         booking["receipt"] = receipt
         self.by_request[(booking["business_id"], receipt["request_id"])] = receipt
+        if receipt["status"] in ENDED:
+            self._forget(booking)
+
+    @staticmethod
+    def _forget(booking: dict[str, Any]) -> None:
+        """Drop who the request was for: never saved, and no longer kept once it's over."""
+        request = booking["request"]
+        if "customer" in request or "notes" in request:
+            request.pop("customer", None)
+            request.pop("notes", None)
+            booking["forgotten"] = True
+
+    def close(self, reference: str) -> None:
+        """The owner has handed the order over (collected, delivered, done): forget the customer."""
+        with self.lock:
+            if reference in self.bookings:
+                self._forget(self.bookings[reference])
 
     def _owner_respond(self, reference: str, accept: bool, message: str | None = None,
                        decline_reason: str = "unavailable") -> dict[str, Any]:
