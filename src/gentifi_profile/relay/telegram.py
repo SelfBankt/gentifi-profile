@@ -2,17 +2,23 @@
 
 Long polling means the bot asks Telegram for new messages, so it runs on any
 machine with internet access: no public address, webhook or certificate needed.
-Standard library only.
+Standard library only. Each thread keeps one connection open to Telegram, over IPv4 where
+there is one: on the Gentifi VPS that's a 13 ms round trip against 200 ms over IPv6, and a new
+secure connection costs several round trips, so owners' taps were answered seconds late.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
+import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlsplit
 
 from .channel import Incoming, Keyboard
 
@@ -24,29 +30,92 @@ class TelegramError(RuntimeError):
     pass
 
 
+def _connect_ipv4_first(address: tuple[str, int], timeout: float | None = None,
+                        source_address: tuple[str, int] | None = None) -> socket.socket:
+    """socket.create_connection, trying IPv4 addresses before IPv6 ones."""
+    host, port = address
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    infos.sort(key=lambda info: info[0] != socket.AF_INET)
+    error: OSError | None = None
+    for family, kind, proto, _, addr in infos:
+        sock = socket.socket(family, kind, proto)
+        try:
+            if timeout is not None:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(addr)
+            return sock
+        except OSError as exc:
+            error = exc
+            sock.close()
+    raise error or OSError(f"couldn't resolve {host}")
+
+
+def _open(scheme: str, host: str, port: int | None) -> http.client.HTTPConnection:
+    conn = (http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection)(host, port)
+    conn._create_connection = _connect_ipv4_first  # set per connection by http.client, so after it
+    return conn
+
+
+# A reused connection Telegram has since closed fails like this before anything is sent
+STALE = (http.client.RemoteDisconnected, http.client.CannotSendRequest, BrokenPipeError, ConnectionResetError)
+
+
 class TelegramChannel:
     def __init__(self, token: str, api: str = API):
         if not token or ":" not in token:
             raise TelegramError("TELEGRAM_BOT_TOKEN is missing or doesn't look like a bot token")
-        self._base = f"{api}/bot{token}/"
         self._files = f"{api}/file/bot{token}/"
+        parts = urlsplit(api)
+        self._server = (parts.scheme, parts.hostname or "", parts.port)
+        self._path = f"{parts.path.rstrip('/')}/bot{token}/"
+        self._local = threading.local()  # the poller and the relay each keep their own connection
         self._offset = 0
         self.username: str | None = None
 
     # ------------------------------------------------------------ API calls
 
+    def _connection(self) -> http.client.HTTPConnection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            scheme, host, port = self._server
+            conn = _open(scheme, host, port)
+            self._local.conn = conn
+        return conn
+
+    def _post(self, method: str, body: bytes, http_timeout: float) -> tuple[int, bytes]:
+        for attempt in (1, 2):
+            conn = self._connection()
+            reused = conn.sock is not None
+            conn.timeout = http_timeout
+            if reused:
+                conn.sock.settimeout(http_timeout)
+            try:
+                conn.request("POST", self._path + method, body=body,
+                             headers={"Content-Type": "application/json", "Connection": "keep-alive"})
+                resp = conn.getresponse()
+                return resp.status, resp.read()
+            except STALE:
+                conn.close()
+                if not reused or attempt == 2:
+                    raise
+            except BaseException:
+                conn.close()  # a half-read response can't be reused
+                raise
+        raise AssertionError("unreachable")
+
     def _call(self, method: str, http_timeout: float = 30, **params: Any) -> Any:
         body = json.dumps({k: v for k, v in params.items() if v is not None}).encode()
-        req = urllib.request.Request(self._base + method, data=body,
-                                     headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=http_timeout) as resp:
-                data = json.load(resp)
-        except urllib.error.HTTPError as exc:
-            try:
-                data = json.load(exc)
-            except ValueError:
-                raise TelegramError(f"{method}: HTTP {exc.code}") from None
+            status, raw = self._post(method, body, http_timeout)
+        except http.client.HTTPException as exc:
+            # Never echo the URL: it contains the token.
+            raise TelegramError(f"{method}: {type(exc).__name__}") from None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            raise TelegramError(f"{method}: HTTP {status}") from None
         if not data.get("ok"):
             # Never echo the URL: it contains the token.
             raise TelegramError(f"{method}: {data.get('description', 'failed')}")
