@@ -218,3 +218,75 @@ def test_profiles_the_toolkit_writes_are_loaded_and_reloaded(tmp_path):
     os.utime(target, (time.time() + 10, time.time() + 10))
     assert directory.refresh() == [], "a broken file is skipped"
     assert directory.get(FARM)["business"]["name"] == "Hollowbrook Farm Shop and Café", "the last good one stays"
+
+
+# ------------------------------------------------------------ forgetting the customer
+
+
+def customer_of(book, reference):
+    request = book.bookings[reference]["request"]
+    return request.get("customer"), request.get("notes")
+
+
+def test_details_are_kept_while_the_order_is_open_and_forgotten_when_it_ends(shop):
+    _, book, links, chat, relay, handoff = shop
+    link_owner(links, chat, relay)
+    reference = handoff.submit(page_order())["reference"]
+    relay.step()
+    prompt = chat.last(OWNER).message_id
+    chat.press(prompt, "Accept")
+    relay.step()
+    assert customer_of(book, reference)[0] == {"name": "Sam Carter", "phone": "07700 900123"}, "the owner may need them"
+    assert "Sam Carter" in chat.messages[prompt].text
+
+    chat.press(prompt, "Done")
+    relay.step()
+    assert customer_of(book, reference) == (None, None)
+    assert "07700" not in chat.messages[prompt].text
+    assert "Customer: details removed now this has ended." in chat.messages[prompt].text
+    assert handoff.order(FARM, "AB12CD34")["status"] == "confirmed", "the page can still show the answer"
+
+
+@pytest.mark.parametrize("ending", ["declined", "expired", "cancelled by the customer", "cancelled by the owner"])
+def test_details_are_forgotten_however_the_order_ends(shop, ending):
+    clock, book, links, chat, relay, handoff = shop
+    link_owner(links, chat, relay)
+    reference = handoff.submit(page_order())["reference"]
+    relay.step()
+    prompt = chat.last(OWNER).message_id
+    if ending == "declined":
+        chat.press(prompt, "Decline")
+        relay.step()
+        chat.press(prompt, "Too busy")
+    elif ending == "expired":
+        clock.now += timedelta(minutes=121)
+        relay.tick()
+    elif ending == "cancelled by the customer":
+        book.submit({"request_id": "cancel_page_1", "business_id": FARM, "action": "cancel", "reference": reference,
+                     "agent": {"name": "Claude"}, "created_at": "2026-10-15T20:10:00+01:00"})
+    else:
+        chat.press(prompt, "Accept")
+        relay.step()
+        chat.press(prompt, "Cancel order")
+        relay.step()
+        chat.press(prompt, "Yes, cancel it")
+    relay.step()
+    assert customer_of(book, reference) == (None, None), ending
+    assert "07700" not in chat.messages[prompt].text
+    expected = "expired" if ending == "expired" else "declined" if ending == "declined" else "cancelled"
+    assert handoff.order(FARM, "AB12CD34")["status"] == expected, "the page sees how it ended"
+
+
+def test_details_are_forgotten_after_a_week_at_most(shop):
+    clock, book, links, chat, relay, handoff = shop
+    link_owner(links, chat, relay)
+    reference = handoff.submit(page_order())["reference"]
+    relay.step()
+    chat.press(chat.last(OWNER).message_id, "Accept")
+    relay.step()
+    clock.now += timedelta(days=6, hours=23)
+    book.expire_overdue()
+    assert customer_of(book, reference)[0] is not None, "an accepted order not yet collected keeps them"
+    clock.now += timedelta(hours=1)
+    book.expire_overdue()
+    assert customer_of(book, reference) == (None, None)

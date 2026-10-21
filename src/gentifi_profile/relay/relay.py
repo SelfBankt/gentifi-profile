@@ -197,6 +197,8 @@ class OwnerRelay:
         if customer.get("name"):
             lines.append("Customer: " + ", ".join(x for x in [customer["name"], customer.get("phone"),
                                                               customer.get("email")] if x))
+        elif booking.get("forgotten"):
+            lines.append("Customer: details removed now this has ended.")
         if req.get("notes"):
             lines.append(f"Note: {req['notes']}")
         return "\n".join(lines)
@@ -370,6 +372,7 @@ class OwnerRelay:
             pay = self.book.bookings[reference]["receipt"].get("payment", {})
             if pay.get("status") == "due_on_fulfilment":
                 self.book.set_payment(reference, {"status": "paid"})  # paid in person on handover
+            self.book.close(reference)
             self.channel.edit(p.chat_id, p.message_id,
                               f"{self._heading(reference)}\n\n{self._summary(reference)}\n\n{arg or 'Done'}. Order closed.",
                               None)

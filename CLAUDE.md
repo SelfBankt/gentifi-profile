@@ -97,6 +97,9 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
   on fulfilment) via `Receipt.payment`. Never route funds through Gentifi.
 - The relay's store listeners must stay quick (they run under the RequestBook lock);
   the relay queues work. Owner-facing text is plain, short and button-first.
+- Customers' names, contact details and notes are held in memory only, never saved, and
+  forgotten when a request ends (declined, expired, cancelled, collected/delivered/done)
+  or after `KEEP_CUSTOMER_DAYS` (7) at most. gentifi.com/privacy promises this: keep it.
 - Secrets (bot token, Nostr master key) come from the environment or a `.env` file,
   never the repo. Never print them.
 - Nostr: the owner never sees it. Publish to relays on this machine only unless
