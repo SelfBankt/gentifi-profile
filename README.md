@@ -290,8 +290,15 @@ signs for it.
 | kind 0 (NIP-01) | the business's name, description, place and opening hours |
 | kind 30017 (NIP-15 stall) | the business, with collection and delivery as shipping zones |
 | kind 30018 (NIP-15 product) | each fixed-price product and variant; stock as `quantity` (0 when sold out, null when not tracked) |
-| kind 30402 (NIP-99 listing) | every offering, including services and items priced on request; `status` is `sold` when sold out |
+| kind 30402 (NIP-99 listing, with [market spec](https://github.com/GammaMarkets/market-spec) tags) | every offering, including services and items priced on request; `status` is `sold` when sold out; `type`, `visibility`, `stock`, `spec` and `image` tags, and an offering with sizes as a `variable` product with a `variation` per size |
+| kind 30405 (market spec collection) | the business's catalogue |
+| kind 30406 (market spec shipping option) | collection from the shop (`pickup`) and local delivery (`standard`) |
 | kind 5 (NIP-09 deletion) | sent instead of the listings while the business is paused |
+
+NIP-15 is deprecated in favour of NIP-99, and newer marketplace apps follow the
+GammaMarkets market spec, which builds a full shop on NIP-99. Gentifi publishes
+both, so older and newer apps can read the same business. Field by field:
+[`docs/nostr-mapping.md`](docs/nostr-mapping.md).
 
 Products and listings carry a `["freshness", observed_at, confidence, source]` tag,
 and every event a NIP-32 label (`["L", "com.gentifi"]`, `["l", <business id>,
@@ -320,6 +327,9 @@ the listings) and `/resume`.
   by others and can't be fully taken back.
 - Pausing and resuming are kept in memory, like requests: a restarted server
   publishes every business as open.
+- **Orders don't come back from Nostr yet.** Marketplace apps may offer to send the
+  business an order as an encrypted message, which nothing reads yet; each listing says
+  to order through an AI assistant. Read this before publishing to public relays.
 
 ## How this relates to the Gentifi toolkit
 

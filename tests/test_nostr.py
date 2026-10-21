@@ -19,6 +19,7 @@ from gentifi_profile.store import Directory, RequestBook
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 FARM = "gtf_hollowbrookfarm"
 MASTER = bytes(range(32))
+PK = "ab" * 32
 
 
 @pytest.fixture
@@ -75,7 +76,7 @@ def test_master_key_is_added_once_and_never_overwritten(tmp_path):
 
 
 def test_profile_becomes_a_stall_products_and_listings(farm):
-    events = profile_events(farm, 1760990000)
+    events = profile_events(farm, 1760990000, pubkey=PK)
     meta = json.loads(next(e for e in events if e["kind"] == 0)["content"])
     assert meta["name"] == "Hollowbrook Farm Shop"
     assert meta["about"].startswith("Fictional example."), "demo businesses stay marked as fictional"
@@ -92,7 +93,7 @@ def test_profile_becomes_a_stall_products_and_listings(farm):
     assert tag(products["eggs:eggs_12"], "freshness") == ["2026-10-15T08:10:00+01:00", "confirmed", "message_parse"]
 
     listings = by_d(events, 30402)
-    assert set(listings) == {"eggs:eggs_6", "eggs:eggs_12", "veg_box", "lamb_half", "farm_tour"}
+    assert set(listings) == {"eggs", "eggs:eggs_6", "eggs:eggs_12", "veg_box", "lamb_half", "farm_tour"}
     assert tag(listings["eggs:eggs_12"], "price") == ["3.50", "GBP"]
     assert tag(listings["lamb_half"], "price") is None
     assert "Price on request" in listings["lamb_half"]["content"]
@@ -107,17 +108,63 @@ def test_sold_out_shows_as_zero_and_sold(farm):
         if rec.get("offering_id") == "eggs":
             rec["status"] = "out_of_stock"
             rec.pop("quantity", None)
-    events = profile_events(farm, 1760990000)
+    events = profile_events(farm, 1760990000, pubkey=PK)
     assert json.loads(by_d(events, 30018)["eggs:eggs_12"]["content"])["quantity"] == 0
     assert tag(by_d(events, 30402)["eggs:eggs_12"], "status") == ["sold"]
+    assert tag(by_d(events, 30402)["eggs:eggs_12"], "stock") == ["0"]
+    assert tag(by_d(events, 30402)["eggs"], "status") == ["active"], "the half dozen isn't known to be sold out"
+    farm["availability"].append({**farm["availability"][0], "variant_id": "eggs_6"})
+    assert tag(by_d(profile_events(farm, 1760990000, pubkey=PK), 30402)["eggs"], "status") == ["sold"], "every size"
+
+
+def test_listings_follow_the_market_spec(farm):
+    farm["offerings"][1]["images"] = ["https://example.org/veg.jpg"]
+    events = profile_events(farm, 1760990000, pubkey=PK)
+    listings = by_d(events, 30402)
+    eggs, dozen, veg, tour = listings["eggs"], listings["eggs:eggs_12"], listings["veg_box"], listings["farm_tour"]
+    assert tag(eggs, "type") == ["variable", "physical"]
+    assert tag(dozen, "type") == ["variation", "physical"]
+    assert ["a", f"30402:{PK}:eggs"] in dozen["tags"], "a size points at its product"
+    assert "Half dozen (£2.00 per 6), Dozen (£3.50 per dozen)" in eggs["content"]
+    assert tag(dozen, "stock") == ["14"] and tag(listings["eggs:eggs_6"], "stock") is None, "untracked: no stock tag"
+    assert tag(dozen, "visibility") == ["on-sale"]
+    assert ["spec", "Price per", "dozen"] in dozen["tags"]
+    assert tag(veg, "image") == ["https://example.org/veg.jpg", "", "0"]
+    assert ["a", f"30405:{PK}:{FARM}"] in veg["tags"]
+    assert [t[1] for t in veg["tags"] if t[0] == "shipping_option"] == [f"30406:{PK}:collection", f"30406:{PK}:delivery"]
+    assert not [t for t in tour["tags"] if t[0] == "shipping_option"], "a farm tour isn't shipped"
+    assert tag(tour, "type") == ["simple", "physical"]
+
+    collection = by_d(events, 30405)[FARM]
+    refs = [t[1] for t in collection["tags"] if t[0] == "a"]
+    assert refs == [f"30402:{PK}:{d}" for d in ["eggs", "veg_box", "lamb_half", "farm_tour"]], "sizes aren't listed twice"
+    assert tag(collection, "title") == ["Hollowbrook Farm Shop"]
+
+    shipping = by_d(events, 30406)
+    pickup, delivery = shipping["collection"], shipping["delivery"]
+    assert (tag(pickup, "service"), tag(pickup, "price"), tag(pickup, "country")) == (["pickup"], ["0", "GBP"], ["GB"])
+    assert tag(pickup, "location") == ["Hollowbrook Lane, Pucklechurch, BS16 9XX"]
+    assert tag(pickup, "g") == [geohash(51.487, -2.437, 7)]
+    assert (tag(delivery, "service"), tag(delivery, "price")) == (["standard"], ["3.00", "GBP"])
+    assert delivery["content"] == "Local delivery to BS16, BS30 and BS37 on Fri. £3.00, free over £30.00."
+
+    farm["business"]["location"]["premises_open_to_public"] = False
+    pickup = by_d(profile_events(farm, 1760990000, pubkey=PK), 30406)["collection"]
+    assert tag(pickup, "location") == ["Pucklechurch, South Gloucestershire"], "no street address for private premises"
+
+    for rec in farm["availability"]:
+        if rec.get("variant_id") == "eggs_12":
+            rec["status"] = "preorder"
+    assert tag(by_d(profile_events(farm, 1760990000, pubkey=PK), 30402)["eggs:eggs_12"], "visibility") == ["pre-order"]
 
 
 def test_paused_business_deletes_its_listings(farm):
-    events = profile_events(farm, 1760990000, paused=True, pubkey="ab" * 32)
+    events = profile_events(farm, 1760990000, paused=True, pubkey=PK)
     assert [e["kind"] for e in events] == [0, 5]
     refs = [t[1] for t in events[1]["tags"] if t[0] == "a"]
-    assert f"30017:{'ab' * 32}:{FARM}" in refs
-    assert f"30402:{'ab' * 32}:farm_tour" in refs
+    assert f"30017:{PK}:{FARM}" in refs
+    assert f"30402:{PK}:farm_tour" in refs
+    assert f"30405:{PK}:{FARM}" in refs and f"30406:{PK}:delivery" in refs
     with pytest.raises(ValueError):
         profile_events(farm, 1760990000, paused=True)
 
@@ -164,7 +211,7 @@ def test_publish_then_sold_out_pause_and_resume_reach_the_relay(tmp_path, relay_
         return fetch(relay_url, [{"authors": [pubkey]}])
 
     first = held()
-    assert len(by_d(first, 30018)) == 3 and len(by_d(first, 30402)) == 5
+    assert len(by_d(first, 30018)) == 3 and len(by_d(first, 30402)) == 6
     assert all(verify(e) for e in first)
 
     publisher.start()  # republishes on every change from here on
@@ -178,7 +225,7 @@ def test_publish_then_sold_out_pause_and_resume_reach_the_relay(tmp_path, relay_
     assert {e["kind"] for e in held()} == {0, 5}
 
     directory.resume(FARM)
-    assert wait_for(lambda: len(by_d(held(), 30402)) == 5), "resuming outdates the deletion"
+    assert wait_for(lambda: len(by_d(held(), 30402)) == 6), "resuming outdates the deletion"
     publisher.stop()
 
 
@@ -192,7 +239,7 @@ def test_a_shop_being_onboarded_is_published_only_once_live(tmp_path, relay_url)
     assert wait_for(lambda: keys.pubkey(plumber) and fetch(relay_url, [{"authors": [keys.pubkey(plumber)]}]))
     assert keys.pubkey(FARM) is None, "nothing signed or sent for a draft"
     directory.go_live(FARM)
-    assert wait_for(lambda: keys.pubkey(FARM) and len(fetch(relay_url, [{"authors": [keys.pubkey(FARM)]}])) == 10)
+    assert wait_for(lambda: keys.pubkey(FARM) and len(fetch(relay_url, [{"authors": [keys.pubkey(FARM)]}])) == 14)
 
     directory.drafts.add(FARM)  # back in onboarding (gentifi-relay invite --onboard): take the listings down
     directory.changed(FARM)
@@ -203,7 +250,7 @@ def test_a_shop_being_onboarded_is_published_only_once_live(tmp_path, relay_url)
     assert wait_for(lambda: {e["kind"] for e in held()} == {0, 5})
     assert "updating its listing" in next(e for e in held() if e["kind"] == 5)["content"]
     directory.go_live(FARM)
-    assert wait_for(lambda: len(by_d(held(), 30402)) == 5)
+    assert wait_for(lambda: len(by_d(held(), 30402)) == 6)
     publisher.stop()
 
 
@@ -214,8 +261,8 @@ def test_cli_publishes_to_a_local_relay_and_refuses_public_ones(tmp_path, relay_
     assert nostr_cli(["publish", FARM, "--profiles", str(EXAMPLES), "--relay", "wss://relay.damus.io"]) == 1
     assert "public relay" in capsys.readouterr().err
     assert nostr_cli(["publish", FARM, "--profiles", str(EXAMPLES), "--relay", relay_url]) == 0
-    assert "10 of 10 events accepted" in capsys.readouterr().out
+    assert "14 of 14 events accepted" in capsys.readouterr().out
     assert nostr_cli(["show", FARM, "--relay", relay_url]) == 0
     out = capsys.readouterr().out
-    assert "10 events" in out and "eggs:eggs_12" in out
+    assert "14 events" in out and "eggs:eggs_12" in out
     assert MASTER.hex() not in out

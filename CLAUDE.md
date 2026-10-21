@@ -51,7 +51,8 @@ heading towards; the plan is for the toolkit to publish each business as a profi
   - `nostr/` — publishing to Nostr. `events.py` (NIP-01 ids, BIP-340 signing via coincurve,
     npub), `keys.py` (a key per business, AES-GCM encrypted in SQLite under
     GENTIFI_NOSTR_MASTER_KEY), `mapping.py` (profile -> kind 0, NIP-15 stall/products,
-    NIP-99 listings, NIP-09 deletion when paused), `client.py` (publish/fetch; public
+    NIP-99 listings with GammaMarkets market-spec tags, market-spec collection and shipping
+    options, NIP-09 deletion when paused; `docs/nostr-mapping.md`), `client.py` (publish/fetch; public
     relays only with allow_public), `localrelay.py` (in-memory test relay),
     `publisher.py` (republishes on Directory changes), `cli.py` (`gentifi-nostr`)
 - `tests/` — `test_profile.py` (spec and validator), `test_requests.py` (request
