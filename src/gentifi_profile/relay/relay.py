@@ -1,0 +1,481 @@
+"""Owner confirmation relay: puts each pending request in front of the business
+owner with one-tap buttons and turns their answer into the receipt the agent
+is waiting for.
+
+    pending -> Accept           -> confirmed (+ payment request) -> paid -> collected/delivered
+            -> Suggest a time   -> declined with the suggestion (the agent asks the customer)
+            -> Decline          -> declined (Sold out also marks those items sold out)
+            -> no answer        -> expired at confirm_by
+
+Silence is safe: nothing is confirmed to the customer until the owner taps Accept.
+Gentifi never holds money: payment requests come from the business's own wallet
+or payment link (see payments.py).
+"""
+
+from __future__ import annotations
+
+import queue
+import sys
+import threading
+import time
+from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from ..freshness import parse_time
+from ..store import RequestBook
+from .channel import Button, Incoming, Keyboard, OwnerChannel
+from .links import Links, Merchant
+from .payments import Http, PaymentError, http_get, is_settled, request_invoice
+
+TICK_SECONDS = 30
+SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$"}
+HELP = """\
+Gentifi sends you orders and bookings from customers' AI assistants. Tap a button to answer.
+
+/orders – what's waiting for you
+/listing – what customers' assistants can see
+/pause – stop new orders (holiday, sold out for the day)
+/resume – take orders again
+/help – this message
+
+Nothing is confirmed to a customer until you tap Accept. If you don't answer in time, the request expires and the customer is told."""
+
+
+def money(m: dict[str, Any] | None) -> str:
+    if not m:
+        return "price to be agreed"
+    amount = m["amount_minor"] / 100
+    sym = SYMBOLS.get(m["currency"])
+    return f"{sym}{amount:,.2f}" if sym else f"{amount:,.2f} {m['currency']}"
+
+
+class OwnerRelay:
+    def __init__(self, book: RequestBook, channel: OwnerChannel, links: Links,
+                 http: Http = http_get, bot_username: str | None = None):
+        self.book = book
+        self.channel = channel
+        self.links = links
+        self.http = http
+        self.bot_username = bot_username
+        self.events: queue.Queue[tuple[str, Any, Any]] = queue.Queue()
+        self.awaiting_time: dict[str, str] = {}   # chat_id -> reference waiting for a typed time
+        self._acting: set[str] = set()            # references whose events the relay itself caused
+        self._stop = threading.Event()
+        book.listeners.append(self._on_event)
+
+    # ------------------------------------------------------------ plumbing
+
+    def _on_event(self, event: str, reference: str) -> None:
+        if reference not in self._acting:
+            self.events.put(("event", event, reference))
+
+    def step(self) -> None:
+        """Handle everything queued, then any owner activity already waiting (tests, dry runs)."""
+        for inc in self.channel.poll(0):
+            self.events.put(("in", inc, None))
+        while not self.events.empty():
+            self._dispatch(self.events.get())
+
+    def _dispatch(self, item: tuple[str, Any, Any]) -> None:
+        kind, a, b = item
+        try:
+            if kind == "event":
+                self.handle_event(a, b)
+            else:
+                self.handle(a)
+        except Exception as exc:  # keep relaying whatever one message did
+            print(f"gentifi-relay: error handling {kind}: {exc!r}", file=sys.stderr)
+
+    def tick(self) -> None:
+        """Periodic work: expire unanswered requests, check Lightning invoices."""
+        self.book.expire_overdue()
+        for p in self.links.awaiting_verification():
+            try:
+                if is_settled(p.verify_url, self.http):
+                    self._act(p.reference, lambda: self._mark_paid(p.reference))
+                    self._refresh(p.reference, note="Paid by Lightning.")
+            except PaymentError as exc:
+                print(f"gentifi-relay: verify {p.reference}: {exc}", file=sys.stderr)
+
+    def run(self, poll_seconds: int = 25) -> None:
+        """Run until stop(): one thread polls the owner channel, this one does the work."""
+        def poller() -> None:
+            while not self._stop.is_set():
+                for inc in self.channel.poll(poll_seconds):
+                    self.events.put(("in", inc, None))
+        threading.Thread(target=poller, name="gentifi-relay-poll", daemon=True).start()
+        last = 0.0
+        while not self._stop.is_set():
+            try:
+                self._dispatch(self.events.get(timeout=5))
+            except queue.Empty:
+                pass
+            if time.monotonic() - last >= TICK_SECONDS:
+                last = time.monotonic()
+                try:
+                    self.tick()
+                except Exception as exc:
+                    print(f"gentifi-relay: tick failed: {exc!r}", file=sys.stderr)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _act(self, reference: str, fn):
+        self._acting.add(reference)
+        try:
+            return fn()
+        finally:
+            self._acting.discard(reference)
+
+    # ------------------------------------------------------------ helpers
+
+    def _profile(self, business_id: str) -> dict[str, Any]:
+        return self.book.directory.get(business_id)
+
+    def _when(self, iso: str, business_id: str) -> str:
+        dt = parse_time(iso).astimezone(ZoneInfo(self._profile(business_id).get("time_zone", "Europe/London")))
+        today = self.book.now.astimezone(dt.tzinfo).date()
+        day = "today" if dt.date() == today else dt.strftime("%a %-d %b")
+        return f"{dt:%H:%M} {day}"
+
+    def _summary(self, reference: str) -> str:
+        booking = self.book.bookings[reference]
+        req, receipt = booking["request"], booking["receipt"]
+        profile = self._profile(booking["business_id"])
+        offerings = {o["id"]: o for o in profile["offerings"]}
+        slots = {r["slot_id"]: r for r in profile["availability"] if r["type"] == "slot"}
+        lines = []
+        for item in req.get("items", []):
+            o = offerings.get(item["offering_id"], {"name": item["offering_id"]})
+            variant = next((v["name"] for v in o.get("variants", []) if v["id"] == item.get("variant_id")), None)
+            name = o["name"] + (f" ({variant})" if variant else "")
+            slot = slots.get(item.get("slot_id"))
+            when = f" at {self._when(slot['start'], booking['business_id'])}" if slot else ""
+            lines.append(f"{item.get('quantity', 1)} × {name}{when}")
+        customer = req.get("customer", {})
+        extra = [f"Total {money(receipt.get('total'))}"]
+        if req.get("fulfilment"):
+            extra.append(req["fulfilment"].replace("_", " ").capitalize())
+        if customer.get("party_size"):
+            extra.append(f"{customer['party_size']} people")
+        lines.append(" · ".join(extra))
+        if customer.get("name"):
+            lines.append(f"Customer: {customer['name']}")
+        if req.get("notes"):
+            lines.append(f"Note: {req['notes']}")
+        return "\n".join(lines)
+
+    def _heading(self, reference: str) -> str:
+        action = self.book.bookings[reference]["request"]["action"]
+        noun = {"book": "booking", "hold": "hold", "enquire": "enquiry"}.get(action, "order")
+        return f"{noun.capitalize()} {reference}"
+
+    def _owns(self, inc: Incoming, reference: str) -> bool:
+        merchant = self.links.by_chat(inc.chat_id)
+        booking = self.book.bookings.get(reference)
+        return bool(merchant and booking and booking["business_id"] == merchant.business_id)
+
+    # ------------------------------------------------------------ store events
+
+    def handle_event(self, event: str, reference: str) -> None:
+        if event == "pending":
+            self._send_prompt(reference)
+        elif event in {"confirmed", "declined", "expired", "cancelled"}:
+            # Changed outside the relay: the customer cancelled, it expired, or a demo tool answered.
+            note = {"expired": "Expired: you didn't answer in time, so the customer was told it wasn't confirmed.",
+                    "cancelled": "The customer cancelled this."}.get(event)
+            self._refresh(reference, note=note)
+        elif event == "payment":
+            self._refresh(reference)
+
+    def _send_prompt(self, reference: str) -> None:
+        booking = self.book.bookings[reference]
+        merchant = self.links.merchant(booking["business_id"])
+        if not merchant or not merchant.chat_id:
+            print(f"gentifi-relay: {booking['business_id']} has no linked owner chat; "
+                  f"{reference} will expire unanswered", file=sys.stderr)
+            return
+        text = self._pending_text(reference)
+        mid = self.channel.send(merchant.chat_id, text, self._pending_buttons(reference))
+        self.links.save_prompt(reference, booking["business_id"], merchant.chat_id, mid)
+
+    def _pending_text(self, reference: str) -> str:
+        booking = self.book.bookings[reference]
+        by = self._when(booking["receipt"]["confirm_by"], booking["business_id"])
+        return (f"New {self._heading(reference)[0].lower() + self._heading(reference)[1:]} via an AI assistant\n\n"
+                f"{self._summary(reference)}\n\nPlease answer by {by}.")
+
+    @staticmethod
+    def _pending_buttons(reference: str) -> Keyboard:
+        return [[Button("Accept", f"a:{reference}"), Button("Decline", f"d:{reference}")],
+                [Button("Suggest another time", f"s:{reference}")]]
+
+    def _refresh(self, reference: str, note: str | None = None) -> None:
+        """Redraw the owner's message for a request to match its current state."""
+        p = self.links.prompt(reference)
+        booking = self.book.bookings.get(reference)
+        if p is None or booking is None:
+            return
+        receipt = booking["receipt"]
+        status = receipt["status"]
+        head = f"{self._heading(reference)}\n\n{self._summary(reference)}"
+        if status == "pending_confirmation":
+            self.channel.edit(p.chat_id, p.message_id, self._pending_text(reference), self._pending_buttons(reference))
+            return
+        if status in {"confirmed", "held"}:
+            pay = receipt.get("payment", {})
+            fulfilment = booking["request"].get("fulfilment")
+            done_label = "Delivered" if fulfilment in {"delivery", "at_customer_location"} else (
+                "Collected" if fulfilment == "collection" else "Done")
+            lines = [f"Accepted. {self._payment_line(booking, pay)}"]
+            if note:
+                lines.append(note)
+            buttons: Keyboard = []
+            if pay.get("status") == "awaiting":
+                buttons.append([Button("Mark paid", f"p:{reference}")])
+            buttons.append([Button(done_label, f"c:{reference}:{done_label}")])
+            buttons.append([Button("Cancel order", f"x:{reference}")])
+            self.channel.edit(p.chat_id, p.message_id, head + "\n\n" + "\n".join(lines), buttons)
+            return
+        label = {"declined": "Declined", "expired": "Expired", "cancelled": "Cancelled",
+                 "failed": "Failed"}.get(status, status)
+        text = f"{head}\n\n{note or label + '. ' + receipt.get('message', '')}".rstrip()
+        self.channel.edit(p.chat_id, p.message_id, text, None)
+        self.links.close(reference)
+
+    @staticmethod
+    def _payment_line(booking: dict[str, Any], pay: dict[str, Any]) -> str:
+        if pay.get("status") == "paid":
+            return "Paid."
+        url = pay.get("checkout_url", "")
+        if url.startswith("lightning:"):
+            return "The customer has a Lightning invoice from your wallet."
+        if url:
+            return "The customer has your payment link."
+        return "The customer pays you on collection or delivery."
+
+    # ------------------------------------------------------------ owner activity
+
+    def handle(self, inc: Incoming) -> None:
+        if inc.kind == "button":
+            self._button(inc)
+        else:
+            self._text(inc)
+
+    def _button(self, inc: Incoming) -> None:
+        verb, _, rest = inc.value.partition(":")
+        reference, _, arg = rest.partition(":")
+        if not self._owns(inc, reference):
+            self.channel.ack(inc, "This isn't one of your requests.")
+            return
+        try:
+            note = self._act(reference, lambda: self._do(verb, reference, arg, inc))
+        except ValueError:
+            note = "This request isn't open any more."
+            self._refresh(reference)
+        self.channel.ack(inc, note)
+
+    def _do(self, verb: str, reference: str, arg: str, inc: Incoming) -> str | None:
+        p = self.links.prompt(reference)
+        if verb == "a":
+            receipt = self.book.owner_respond(reference, True)
+            if receipt["status"] == "confirmed":
+                self._hand_off_payment(reference)
+                self._refresh(reference)
+                return "Accepted. The customer has been told."
+            self._refresh(reference, note=f"Couldn't accept: {receipt.get('message', '')} The customer has been told.")
+            return None
+        if verb == "d":
+            self.channel.edit(p.chat_id, p.message_id, self._pending_text(reference) + "\n\nWhy are you declining?",
+                              [[Button("Sold out", f"dr:{reference}:sold"), Button("Too busy", f"dr:{reference}:busy")],
+                               [Button("Other reason", f"dr:{reference}:other")],
+                               [Button("« Back", f"b:{reference}")]])
+            return None
+        if verb == "dr":
+            booking = self.book.bookings[reference]
+            name = self._profile(booking["business_id"])["business"]["name"]
+            message = {"sold": f"{name} has sold out of this.",
+                       "busy": f"{name} can't take this one right now."}.get(arg, f"Declined by {name}.")
+            if arg == "sold":
+                self.book.mark_sold_out(booking["business_id"],
+                                        {i["offering_id"] for i in booking["request"].get("items", [])})
+            self.book.owner_respond(reference, False, message)
+            self._refresh(reference, note="Declined. The customer has been told." +
+                          (" Those items are now shown as sold out." if arg == "sold" else ""))
+            return "Declined."
+        if verb == "s":
+            self.channel.edit(p.chat_id, p.message_id, self._pending_text(reference) + "\n\nWhen could you do it?",
+                              [[Button("Later today", f"st:{reference}:later"),
+                                Button("Tomorrow", f"st:{reference}:tomorrow")],
+                               [Button("Type a time", f"st:{reference}:type")],
+                               [Button("« Back", f"b:{reference}")]])
+            return None
+        if verb == "st":
+            if arg == "type":
+                self.awaiting_time[inc.chat_id] = reference
+                self.channel.send(inc.chat_id, f"Type the time you can do for {reference}, e.g. \"Saturday 10am\".")
+                return None
+            when = {"later": "later today", "tomorrow": "tomorrow"}.get(arg, arg)
+            return self._suggest(reference, when)
+        if verb == "b":
+            self._refresh(reference)
+            return None
+        if verb == "p":
+            self._mark_paid(reference)
+            self._refresh(reference)
+            return "Marked paid."
+        if verb == "c":
+            pay = self.book.bookings[reference]["receipt"].get("payment", {})
+            if pay.get("status") == "due_on_fulfilment":
+                self.book.set_payment(reference, {"status": "paid"})  # paid in person on handover
+            self.channel.edit(p.chat_id, p.message_id,
+                              f"{self._heading(reference)}\n\n{self._summary(reference)}\n\n{arg or 'Done'}. Order closed.",
+                              None)
+            self.links.close(reference)
+            return "Closed."
+        if verb == "x":
+            booking = self.book.bookings[reference]
+            self.channel.edit(p.chat_id, p.message_id,
+                              f"{self._heading(reference)}\n\n{self._summary(reference)}\n\n"
+                              "Cancel this order? The customer will be told.",
+                              [[Button("Yes, cancel it", f"xx:{reference}")], [Button("« Back", f"b:{reference}")]])
+            return None
+        if verb == "xx":
+            self.book.owner_cancel(reference)
+            self._refresh(reference, note="Cancelled. The customer has been told.")
+            return "Cancelled."
+        return None
+
+    def _suggest(self, reference: str, when: str) -> str:
+        self.book.owner_suggest(reference, when)
+        self._refresh(reference, note=f"You suggested {when}. The customer's assistant will check with them "
+                                      "and send a new request if it suits.")
+        return "Suggestion sent."
+
+    def _mark_paid(self, reference: str) -> None:
+        pay = dict(self.book.bookings[reference]["receipt"].get("payment", {}))
+        pay["status"] = "paid"
+        self.book.set_payment(reference, pay)
+        self.links.set_verify(reference, None)
+
+    def _hand_off_payment(self, reference: str) -> None:
+        """Give the customer's agent a way to pay the business directly."""
+        booking = self.book.bookings[reference]
+        receipt = booking["receipt"]
+        total = receipt.get("total")
+        merchant = self.links.merchant(booking["business_id"]) or Merchant(booking["business_id"], None, None, None, None)
+        profile = self._profile(booking["business_id"])
+        name = profile["business"]["name"]
+        in_person = [m.replace("_", " ") for m in profile["policies"].get("payment_methods", [])
+                     if m in {"cash", "card_in_person"}]
+        also = f" You can also pay {name} in person ({' or '.join(in_person)})." if in_person else ""
+        if total and merchant.lightning_address:
+            try:
+                inv = request_invoice(merchant.lightning_address, total["amount_minor"], total["currency"],
+                                      f"Gentifi {reference}", self.http)
+                self.links.set_verify(reference, inv.verify_url)
+                self.book.set_payment(reference, {"status": "awaiting", "checkout_url": inv.uri},
+                                      message=(f"Confirmed by {name}. Pay {inv.sats:,} sats by Lightning "
+                                               f"({money(total)} at {SYMBOLS.get(total['currency'], '')}"
+                                               f"{inv.btc_price:,.0f} per BTC) using checkout_url; the invoice "
+                                               f"goes straight to {name}'s wallet.{also}"))
+                return
+            except PaymentError as exc:
+                p = self.links.prompt(reference)
+                if p:
+                    self.channel.send(p.chat_id, f"I couldn't get a Lightning invoice from {merchant.lightning_address} "
+                                                 f"({exc}), so the customer was told to pay you another way.")
+        if total and merchant.payment_link:
+            self.book.set_payment(reference, {"status": "awaiting", "checkout_url": merchant.payment_link},
+                                  message=f"Confirmed by {name}. Pay {money(total)} using checkout_url.{also}")
+            return
+        self.book.set_payment(reference, {"status": "due_on_fulfilment"},
+                              message=f"Confirmed by {name}. Pay {money(total)} on collection or delivery.{also}")
+
+    # ------------------------------------------------------------ text and commands
+
+    def _text(self, inc: Incoming) -> None:
+        text = inc.value.strip()
+        command, _, arg = text.partition(" ")
+        command = command.split("@")[0].lower()
+        if command == "/start":
+            self._start(inc, arg.strip())
+            return
+        merchant = self.links.by_chat(inc.chat_id)
+        if merchant is None:
+            self.channel.send(inc.chat_id, "This bot is for businesses on Gentifi. "
+                                           "Open the invite link Gentifi gave you to connect your business.")
+            return
+        if inc.chat_id in self.awaiting_time and not text.startswith("/"):
+            reference = self.awaiting_time.pop(inc.chat_id)
+            try:
+                self._act(reference, lambda: self._suggest(reference, text))
+                self.channel.send(inc.chat_id, f"Sent: you suggested \"{text}\" for {reference}.")
+            except ValueError:
+                self.channel.send(inc.chat_id, f"{reference} isn't open any more.")
+            return
+        directory = self.book.directory
+        name = self._profile(merchant.business_id)["business"]["name"]
+        if command == "/pause":
+            directory.paused.add(merchant.business_id)
+            self.channel.send(inc.chat_id, f"Paused. {name} is hidden from AI assistants and new requests are "
+                                           "declined until you send /resume.")
+        elif command == "/resume":
+            directory.paused.discard(merchant.business_id)
+            self.channel.send(inc.chat_id, f"{name} is taking requests again.")
+        elif command == "/orders":
+            self._orders(inc, merchant)
+        elif command == "/listing":
+            self._listing(inc, merchant)
+        else:
+            self.channel.send(inc.chat_id, HELP)
+
+    def _start(self, inc: Incoming, code: str) -> None:
+        if code:
+            business_id = self.links.redeem(code, inc.chat_id, inc.name)
+            if business_id:
+                name = self._profile(business_id)["business"]["name"] if business_id in self.book.directory.profiles else business_id
+                self.channel.send(inc.chat_id, f"Connected to {name}. When a customer's AI assistant sends an order "
+                                               f"or booking, I'll message you here to Accept or Decline.\n\n{HELP}")
+                return
+            if not self.links.by_chat(inc.chat_id):
+                self.channel.send(inc.chat_id, "That invite link has expired or was already used. "
+                                               "Ask Gentifi for a new one.")
+                return
+        if self.links.by_chat(inc.chat_id):
+            self.channel.send(inc.chat_id, HELP)
+        else:
+            self.channel.send(inc.chat_id, "Hi! This bot is for businesses on Gentifi. "
+                                           "Open the invite link Gentifi gave you to connect your business.")
+
+    def _orders(self, inc: Incoming, merchant: Merchant) -> None:
+        open_ = [p for p in self.links.open_prompts(merchant.business_id) if p.reference in self.book.bookings]
+        if not open_:
+            self.channel.send(inc.chat_id, "Nothing waiting for you right now.")
+            return
+        for p in open_:
+            # Re-send so the buttons are at the bottom of the chat, and retire the old message.
+            self.channel.edit(p.chat_id, p.message_id, f"{self._heading(p.reference)}: moved down.", None)
+            mid = self.channel.send(inc.chat_id, "…")
+            self.links.save_prompt(p.reference, p.business_id, inc.chat_id, mid)
+            self._refresh(p.reference)
+
+    def _listing(self, inc: Incoming, merchant: Merchant) -> None:
+        profile = self._profile(merchant.business_id)
+        status = {r["offering_id"]: r["status"].replace("_", " ") for r in profile["availability"]
+                  if r["type"] == "stock"}
+        lines = [profile["business"]["name"] +
+                 (" (paused)" if merchant.business_id in self.book.directory.paused else "")]
+        for o in profile["offerings"]:
+            price = o.get("price", {})
+            p = money(price.get("amount")) if price.get("type") == "fixed" else "price on request"
+            lines.append(f"• {o['name']}: {p}" + (f" ({status[o['id']]})" if o["id"] in status else ""))
+        pay = []
+        if merchant.lightning_address:
+            pay.append(f"Lightning to {merchant.lightning_address}")
+        if merchant.payment_link:
+            pay.append("your payment link")
+        pay.append("in person")
+        lines.append("\nCustomers can pay by " + ", ".join(pay) + ".")
+        self.channel.send(inc.chat_id, "\n".join(lines))

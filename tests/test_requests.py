@@ -47,6 +47,17 @@ def test_a_reused_request_id_with_a_different_request_is_refused_not_answered():
     assert "already used for a different request" in changed["message"]
 
 
+def test_a_failed_request_can_be_corrected_and_retried_with_the_same_request_id():
+    book = new_book()
+    first = book.submit({"request_id": "req_retry_1", "business_id": FARM, "action": "order",
+                         "items": [{"offering_id": "no_such_thing", "quantity": 1}],
+                         "customer_confirmation": {"method": "in_app", "confirmed_at": "2026-10-15T19:39:30+01:00"},
+                         "agent": {"name": "Claude"}, "created_at": "2026-10-15T19:40:00+01:00"})
+    assert first["status"] == "failed"
+    retried = book_tour(book, "req_retry_1", 2)
+    assert retried["status"] == "pending_confirmation", "a failed attempt must not block its corrected retry"
+
+
 def test_references_are_random_not_derived_from_the_request_id():
     a, b = new_book(), new_book()
     assert book_tour(a, "req_same_id_2", 1)["reference"] != book_tour(b, "req_same_id_2", 1)["reference"]

@@ -4,3 +4,7 @@ __pycache__/
 build/
 dist/
 .venv/
+
+# Secrets and local relay state: never commit
+.env
+*.db

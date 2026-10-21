@@ -93,6 +93,7 @@ Design choices worth knowing:
 | [`schema/v0.1/profile.schema.json`](schema/v0.1/profile.schema.json) | the specification, as JSON Schema 2020-12 |
 | `examples/` | valid example profiles and messages |
 | `src/gentifi_profile/` | Python validator and reference MCP server |
+| `src/gentifi_profile/relay/` | owner confirmation relay: owners answer requests on Telegram |
 | `tests/` | tests for both |
 
 ## Validate a profile
@@ -136,12 +137,91 @@ To use it with Claude Desktop, add to `claude_desktop_config.json`:
 }
 ```
 
-Use `--transport streamable-http` to serve it over HTTP instead.
+Use `--transport streamable-http` to serve it over HTTP instead. With
+`--telegram`, run it on its own instead: see
+[Run the bot on its own](#run-the-bot-on-its-own).
 
 **This is a reference implementation, not a production service.** It keeps
-bookings in memory, doesn't contact businesses, and doesn't take payment or adjust
-stock levels on orders. Its job is to show the intended behaviour and let you test
+bookings in memory, doesn't take payment (at most it passes on the business's own
+payment request) and doesn't adjust stock levels on orders. Its job is to show the intended behaviour and let you test
 the format with real agents.
+
+## Let owners answer on Telegram
+
+With `--telegram`, the server runs the **owner confirmation relay** alongside it.
+Each request that needs the owner goes to their Telegram chat:
+
+```
+New order GTF-5E54326D via an AI assistant
+
+2 × Free-range eggs (Dozen)
+1 × Seasonal veg box
+Total £25.00 · Collection
+Customer: Sam
+
+Please answer by 22:00 today.
+[Accept] [Decline] [Suggest another time]
+```
+
+- **Accept** confirms the request, and the agent gets the business's own way to
+  pay: an invoice from the owner's Lightning wallet (LNURL-pay, checked for the exact
+  amount; marked paid automatically if the wallet supports LUD-21), their own
+  payment link, or pay on collection. **Gentifi never holds money.**
+- **Decline** asks why (Sold out also marks those items sold out).
+- **Suggest another time** declines with the suggestion, so the agent checks with
+  the customer and sends a new request. The customer still confirms what is booked.
+- **No answer** by `confirm_by` expires the request; nothing is confirmed.
+- Owners can send `/orders`, `/listing`, `/pause`, `/resume` and `/help`.
+
+Set up:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`).
+2. Put `TELEGRAM_BOT_TOKEN=<token>` in a `.env` file in the folder you run from, or
+   any folder above it. Never commit it (`.env` is in `.gitignore`).
+3. `gentifi-relay check` confirms the token works.
+4. `gentifi-relay invite <business_id> [--lightning-address shop@wallet.com]
+   [--payment-link https://...]` prints a one-time link; the owner opens it to connect.
+5. Run the server with the relay on its own, as below, and leave it running.
+
+### Run the bot on its own
+
+Only one copy of the bot can poll Telegram at a time, and each copy of the server
+keeps its own requests in memory. So run exactly one server with `--telegram`, over
+HTTP, from the folder with your `.env` (or one below it):
+
+```bash
+gentifi-mcp --profiles <folder> --telegram --transport streamable-http
+```
+
+It listens on `http://127.0.0.1:8000/mcp`, on this machine only. Then point agents
+at that one server. Don't put `--telegram` in `claude_desktop_config.json`:
+Claude Desktop starts each local server more than once (once for chats, once for
+its local tool bridge), which gives two bots that clash over Telegram ("Conflict:
+terminated by other getUpdates request") and an owner's Accept can reach the copy
+that never saw the order. Connect Claude Desktop through
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) instead, which needs
+Node.js:
+
+```json
+{
+  "mcpServers": {
+    "gentifi-local-test": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.14.3", "http://127.0.0.1:8000/mcp"]
+    }
+  }
+}
+```
+
+Start the server before Claude Desktop, and restart Claude Desktop after
+restarting the server. If the hosted Gentifi connector is also switched on, turn it
+off in the chat or name `gentifi-local-test` in your request, so the assistant uses
+this server. Requests are lost when the server stops; owner links are kept.
+
+Owner links live in SQLite at `~/.gentifi/relay.db` (`GENTIFI_RELAY_DB` to change).
+The bot uses long polling, so it runs on any machine with internet access. The
+messaging layer is an interface, so WhatsApp can be added as another adapter.
+Design: [`docs/telegram-merchant-bot-spec.md`](docs/telegram-merchant-bot-spec.md).
 
 ## How this relates to the Gentifi toolkit
 
