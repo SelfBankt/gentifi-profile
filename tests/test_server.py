@@ -145,3 +145,24 @@ async def test_bad_requests_fail_clearly(server):
                       "agent": {"name": "Claude"}, "created_at": "2026-10-15T20:00:00+01:00"}
         receipt = await call(c, "submit_request", request=no_address)
         assert receipt["status"] == "failed" and "'address' is required" in receipt["message"]
+
+
+def test_plugins_add_options_start_before_the_server_and_get_it(monkeypatch):
+    from mcp.server.mcpserver import MCPServer
+
+    from gentifi_profile import server as server_module
+
+    calls = []
+
+    class Plugin:
+        def add_arguments(self, parser):
+            parser.add_argument("--owner-chat", action="store_true")
+
+        def start(self, args, book):
+            calls.append(("start", args.owner_chat, book.directory.listed(FARM) is not None))
+            return lambda server, transport: calls.append(("attach", transport))
+
+    monkeypatch.setattr(server_module, "load_plugins", lambda: [Plugin()])
+    monkeypatch.setattr(MCPServer, "run", lambda self, transport, **kw: calls.append(("run", transport)))
+    server_module.main(["--profiles", str(EXAMPLES), "--owner-chat", "--transport", "streamable-http"])
+    assert calls == [("start", True, True), ("attach", "streamable-http"), ("run", "streamable-http")]

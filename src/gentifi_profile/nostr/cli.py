@@ -20,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-from ..relay.cli import db_path, load_env
+from ..settings import db_path, load_env
 from ..store import Directory
 from .client import RelayError, check_relays, fetch
 from .events import npub

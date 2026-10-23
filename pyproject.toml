@@ -19,7 +19,6 @@ dev = ["mcp>=2.0", "pytest>=8", "coincurve>=20", "cryptography>=42", "websockets
 [project.scripts]
 gentifi-validate = "gentifi_profile.cli:main"
 gentifi-mcp = "gentifi_profile.server:main"
-gentifi-relay = "gentifi_profile.relay.cli:main"
 gentifi-nostr = "gentifi_profile.nostr.cli:main"
 
 [tool.setuptools.packages.find]

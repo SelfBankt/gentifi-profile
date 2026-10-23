@@ -93,7 +93,6 @@ Design choices worth knowing:
 | [`schema/v0.1/profile.schema.json`](schema/v0.1/profile.schema.json) | the specification, as JSON Schema 2020-12 |
 | `examples/` | valid example profiles and messages |
 | `src/gentifi_profile/` | Python validator and reference MCP server |
-| `src/gentifi_profile/relay/` | owner confirmation relay: owners answer requests on Telegram |
 | `src/gentifi_profile/nostr/` | publishing businesses to Nostr (NIP-15 and NIP-99) |
 | `tests/` | tests for both |
 
@@ -138,159 +137,23 @@ To use it with Claude Desktop, add to `claude_desktop_config.json`:
 }
 ```
 
-Use `--transport streamable-http` to serve it over HTTP instead. With
-`--telegram`, run it on its own instead: see
-[Run the bot on its own](#run-the-bot-on-its-own).
+Use `--transport streamable-http` to serve it over HTTP instead.
 
 **This is a reference implementation, not a production service.** It keeps
-bookings in memory (with `--telegram`, the relay database keeps them through a restart, never with
-the customer's details), doesn't take payment (at most it passes on the business's own
+bookings in memory, doesn't take payment (at most it passes on the business's own
 payment request) and doesn't adjust stock levels on orders. Its job is to show the intended behaviour and let you test
 the format with real agents.
 
-## Let owners answer on Telegram
+## Owner confirmation channels
 
-With `--telegram`, the server runs the **owner confirmation relay** alongside it.
-Each request that needs the owner goes to their Telegram chat:
-
-```
-New order GTF-5E54326D via an AI assistant
-
-2 × Free-range eggs (Dozen)
-1 × Seasonal veg box
-Total £25.00 · Collection
-Customer: Sam
-
-Please answer by 22:00 today.
-[Accept] [Decline] [Suggest another time]
-```
-
-- **Accept** confirms the request, and the agent gets the business's own way to
-  pay: an invoice from the owner's Lightning wallet (LNURL-pay, checked for the exact
-  amount; marked paid automatically if the wallet supports LUD-21), their own
-  payment link, or pay on collection. **Gentifi never holds money.**
-- **Decline** asks why (Sold out also marks those items sold out).
-- **Suggest another time** declines with the suggestion, so the agent checks with
-  the customer and sends a new request. The customer still confirms what is booked.
-- **No answer** by `confirm_by` expires the request; nothing is confirmed.
-- Owners can send `/orders`, `/listing`, `/soldout`, `/instock`, `/edit`, `/pause`, `/resume` and `/help`.
-  `/soldout` and `/instock` list the shop's products as buttons: one tap marks an item sold
-  out or back in stock (every size of it), owner-confirmed and fresh. Marks are saved in the
-  database, so they last through a restart and through Gentifi editing the profile, until the
-  profile is newer (its `updated_at`, or the item's stock record: the owner's sheet was read
-  again after the mark).
-- `/edit` changes an item's price or description: pick the item, Price or Description, type
-  it, and Confirm. It's live at once (the owner confirmed it, as with a change to their sheet),
-  a price more than double or under half the old one is flagged first, and Gentifi's team chats
-  are told. Each edit lasts until the profile's own value for that field changes (the sheet
-  wins), and is saved in the database and in `edits.json` for the toolkit's host.
-
-Set up:
-
-1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`).
-2. Put `TELEGRAM_BOT_TOKEN=<token>` in a `.env` file in the folder you run from, or
-   any folder above it. Never commit it (`.env` is in `.gitignore`).
-3. `gentifi-relay check` confirms the token works.
-4. `gentifi-relay invite <business_id> [--lightning-address shop@wallet.com]
-   [--payment-link https://...]` prints a one-time link; the owner opens it to connect.
-5. Run the server with the relay on its own, as below, and leave it running.
-
-### Onboard a new business
-
-For a new business, Gentifi writes the profile by hand and the owner checks it in
-Telegram before anything goes live. Once, run `gentifi-relay team` and open the link
-yourself: that chat is then told when an owner connects, asks for a change or goes live.
-
-1. Put the profile in the server's profiles folder.
-2. `gentifi-relay invite <business_id> --onboard` prints the owner's link. The business
-   is hidden from agents (as if it didn't exist) and not published to Nostr (if it was
-   published before, its listings are taken down until it goes live again); a running
-   bot picks this up within 30 seconds, no restart needed.
-3. The owner opens the link and gets a summary: name, address, opening hours, the first
-   three items with prices, collection or delivery. `Looks right` or `Something's wrong`.
-4. `Something's wrong`: the owner types what to change. It's sent to your team chat,
-   saved (`gentifi-relay merchants` shows it) and printed in the bot's window. Edit the
-   profile, then `gentifi-relay review <business_id>`: the bot reloads it and sends the
-   owner the new summary.
-5. `Looks right` asks how customers pay: always in person, and optionally ahead to the
-   owner's own Lightning address (checked before saving) or payment link.
-6. `Go live`: the business appears to agents and is published to Nostr.
-
-`gentifi-relay review` also works for a live business after you edit its profile: the
-bot reloads it (bookings made since start-up are reset) and tells the owner.
-
-### Orders from the toolkit's confirmation page
-
-On the Gentifi host, customers confirm orders on the toolkit's page at
-`mcp.gentifi.com/o/<link>`. When the business's owner is linked here (and live, not
-paused), the host hands the confirmed order to this server instead of the business's
-email: the owner answers in Telegram and the page shows the customer the answer. The
-host calls three routes on `127.0.0.1` with a shared secret
-(`src/gentifi_profile/relay/handoff.py`); they exist only with `--telegram` and the HTTP
-transport. Owners get `--answer-minutes` (default 120) to answer, whatever a profile
-asks for. With `--profiles <toolkit businesses folder>` the server also reads the
-`gentifi-profile.json` the host writes for each business, and picks up changes within
-30 seconds.
-
-Businesses being onboarded are listed in `onboarding.json` next to the relay database,
-rewritten whenever one is invited with `--onboard` or goes live; the toolkit's host reads it
-(`GENTIFI_ONBOARDING_FILE`) to keep them hidden from customers' agents until then.
-In the same way, `stock.json` holds what owners have marked sold out or back in stock, by
-business and offering id with the time of each mark; the host (`GENTIFI_STOCK_FILE`) shows
-it to customers' agents over the sheet, within 5 seconds, unless the sheet is newer.
-`edits.json` does the same for owners' price and description edits (`GENTIFI_EDITS_FILE`).
-
-### Photos of prices
-
-An owner linked to the bot can send it a photo of their price board or menu (or a
-screenshot). The bot thanks them, passes the photo to Gentifi's team chats, and, with the
-toolkit installed (`GENTIFI_TOOLKIT`) and a model set (`GENTIFI_AI_MODEL`, plus the toolkit's
-AI key settings), drafts a catalogue from it with `gentifi draft` and sends the team the
-items, prices and anything to check (`src/gentifi_profile/relay/drafts.py`). Nothing changes
-for the business until someone has checked the draft.
-
-### Run the bot on its own
-
-On the Gentifi VPS it runs as the `gentifi-bot` service: see [docs/vps.md](docs/vps.md).
-
-Only one copy of the bot can poll Telegram at a time, and each copy of the server
-keeps its own requests. So run exactly one server with `--telegram`, over
-HTTP, from the folder with your `.env` (or one below it):
-
-```bash
-gentifi-mcp --profiles <folder> --telegram --transport streamable-http
-```
-
-It listens on `http://127.0.0.1:8000/mcp`, on this machine only (`--port` to use
-another port, and change the address below to match). Then point agents
-at that one server. Don't put `--telegram` in `claude_desktop_config.json`:
-Claude Desktop starts each local server more than once (once for chats, once for
-its local tool bridge), which gives two bots that clash over Telegram ("Conflict:
-terminated by other getUpdates request") and an owner's Accept can reach the copy
-that never saw the order. Connect Claude Desktop through
-[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) instead, which needs
-Node.js:
-
-```json
-{
-  "mcpServers": {
-    "gentifi-local-test": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote@0.14.3", "http://127.0.0.1:8000/mcp"]
-    }
-  }
-}
-```
-
-Start the server before Claude Desktop, and restart Claude Desktop after
-restarting the server. If the hosted Gentifi connector is also switched on, turn it
-off in the chat or name `gentifi-local-test` in your request, so the assistant uses
-this server. Requests are lost when the server stops; owner links are kept.
-
-Owner links live in SQLite at `~/.gentifi/relay.db` (`GENTIFI_RELAY_DB` to change).
-The bot uses long polling, so it runs on any machine with internet access. The
-messaging layer is an interface, so WhatsApp can be added as another adapter.
-Design: [`docs/telegram-merchant-bot-spec.md`](docs/telegram-merchant-bot-spec.md).
+Requests that need the business to confirm wait as `pending_confirmation` until the
+owner answers. In the reference server `--demo`'s `respond_as_owner` plays the owner.
+A real channel (owners answering from a chat app) is a separate package that plugs into
+`gentifi-mcp` through the `gentifi_profile.server_plugins` entry point: it can add
+command-line options, start alongside the server on the same `RequestBook`
+(`book.owner_respond` answers a request) and add routes to the HTTP server. See the
+docstring at the top of `src/gentifi_profile/server.py`. Gentifi's hosted service adds
+its Telegram owner bot this way.
 
 ## Publish businesses to Nostr
 
@@ -324,12 +187,12 @@ gentifi-nostr relay                   # a test relay on ws://127.0.0.1:7777 (in 
 gentifi-nostr events gtf_hollowbrookfarm --profiles examples       # dry run
 gentifi-nostr publish gtf_hollowbrookfarm --profiles examples --relay ws://127.0.0.1:7777
 gentifi-nostr show gtf_hollowbrookfarm --relay ws://127.0.0.1:7777
-gentifi-mcp --profiles examples --telegram --transport streamable-http --nostr-relay ws://127.0.0.1:7777
+gentifi-mcp --profiles examples --transport streamable-http --nostr-relay ws://127.0.0.1:7777
 ```
 
 With `--nostr-relay`, the server publishes every business when it starts and again
-when its listing changes: an owner marking items sold out, `/pause` (which deletes
-the listings) and `/resume`.
+when its listing changes: items marked sold out, the business paused (which deletes
+the listings) and resumed.
 
 - **Keys** are kept in `~/.gentifi/relay.db`, encrypted (AES-256-GCM) with the master
   key from `.env`. Keep a copy of the master key: without it Gentifi can't sign for
