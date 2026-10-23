@@ -41,13 +41,11 @@ heading towards; the plan is for the toolkit to publish each business as a profi
     idempotency, random references, holds, cancellation, owner responses that
     never overbook)
   - `server.py` — reference MCP server `gentifi-mcp` (MCP Python SDK 2.x, `MCPServer`);
-    `--telegram` runs the owner relay in a background thread on the same RequestBook
-  - `relay/` — owner confirmation relay. `channel.py` (OwnerChannel interface +
-    MockChannel), `telegram.py` (Bot API, long polling, stdlib only), `links.py`
-    (SQLite: owner chat links, invites, prompt messages, open orders without the customer), `handoff.py` (orders from the
-    toolkit's confirmation page, over 127.0.0.1 with a shared secret), `payments.py` (LNURL-pay
-    invoice from the merchant's own Lightning address, LUD-21 verify, BOLT 11 amount
-    check), `relay.py` (prompts, buttons, commands, expiry), `cli.py` (`gentifi-relay`)
+    other packages extend it through the `gentifi_profile.server_plugins` entry point
+    (`add_arguments(parser)`, `start(args, book)`). Gentifi's Telegram owner bot is such a
+    plugin, in the private SelfBankt/gentifi-platform repo: keep its code out of this one
+  - `settings.py` — `.env` loading and the state database path (`GENTIFI_RELAY_DB`), shared
+    with plugins
   - `nostr/` — publishing to Nostr. `events.py` (NIP-01 ids, BIP-340 signing via coincurve,
     npub), `keys.py` (a key per business, AES-GCM encrypted in SQLite under
     GENTIFI_NOSTR_MASTER_KEY), `mapping.py` (profile -> kind 0, NIP-15 stall/products,
@@ -56,12 +54,8 @@ heading towards; the plan is for the toolkit to publish each business as a profi
     relays only with allow_public), `localrelay.py` (in-memory test relay),
     `publisher.py` (republishes on Directory changes), `cli.py` (`gentifi-nostr`)
 - `tests/` — `test_profile.py` (spec and validator), `test_requests.py` (request
-  edge cases), `test_server.py` (end to end over MCP), `test_relay.py` (relay through
-  a mock chat and fake wallet), `test_telegram.py` (adapter against a fake Bot API),
+  edge cases), `test_server.py` (end to end over MCP, and the plugin hook),
   `test_nostr.py` (vectors, key custody, mapping, round trip through the local relay).
-- `docs/telegram-merchant-bot-spec.md` — design of the Telegram merchant bot.
-- `deploy/` and `docs/vps.md` — the bot as the `gentifi-bot` service on the Gentifi VPS
-  (next to the toolkit's `gentifi-host`, on 127.0.0.1:8765), pinned to `deploy/constraints.txt`.
 - `docs/developers-page.md` — copy for the Gentifi Business Profile section on
   gentifi.com/standards.
 
@@ -70,12 +64,6 @@ heading towards; the plan is for the toolkit to publish each business as a profi
 ```bash
 pip install -e ".[dev]"
 python -m pytest -q
-gentifi-relay check                     # Telegram token from .env works?
-gentifi-relay invite gtf_hollowbrookfarm --lightning-address shop@wallet.com
-gentifi-relay invite gtf_newshop --onboard   # hidden until the owner checks the listing and goes live
-gentifi-relay review gtf_newshop             # after editing its profile: the bot reloads it, shows the owner
-gentifi-relay team                           # link Gentifi's own chat: told about change requests, go-lives
-gentifi-mcp --profiles examples --telegram --transport streamable-http  # one copy only; see README
 gentifi-nostr init && gentifi-nostr relay                              # Nostr: master key, test relay
 gentifi-nostr publish gtf_hollowbrookfarm --profiles examples --relay ws://127.0.0.1:7777
 gentifi-validate examples/*.json examples/messages/*.json --profile examples/farm-shop.json --strict --now 2026-10-15T20:00:00+01:00
@@ -96,16 +84,13 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
 - **Gentifi never touches money.** Payment is only ever a hand-off of the business's
   own payment request (their Lightning wallet's invoice, their payment link, or pay
   on fulfilment) via `Receipt.payment`. Never route funds through Gentifi.
-- The relay's store listeners must stay quick (they run under the RequestBook lock);
-  the relay queues work. Owner-facing text is plain, short and button-first.
+- Store listeners must stay quick (they run under the RequestBook lock).
 - Customers' names, contact details and notes are held in memory only, never saved, and
   forgotten when a request ends (declined, expired, cancelled, collected/delivered/done)
   or after `KEEP_CUSTOMER_DAYS` (7) at most. gentifi.com/privacy promises this: keep it.
-  Requests themselves are saved (`RequestBook.on_save`, the relay's `orders` table, a week at most)
-  so a restart loses nothing; after one, the relay reads the customer's details back from the
-  owner's own message when a button on it is pressed, and never rewrites an open request's
-  message before then.
-- Secrets (bot token, Nostr master key) come from the environment or a `.env` file,
+  Requests themselves are saved (`RequestBook.on_save`, a week at most) so a restart loses nothing, never with the
+  customer's details.
+- Secrets (Nostr master key, a plugin's tokens) come from the environment or a `.env` file,
   never the repo. Never print them.
 - Nostr: the owner never sees it. Publish to relays on this machine only unless
   the user explicitly allows public relays; directory changes (sold out, pause,
@@ -117,14 +102,15 @@ Example data is dated 15 Oct 2026; pass `--now` (or `GENTIFI_NOW`) so it isn't s
 ## Publishing
 
 - Schema `$id`: `https://gentifi.com/standards/profile-0.1.schema.json`.
-- Repository: github.com/SelfBankt/gentifi-profile (private for now).
+- Repository: github.com/SelfBankt/gentifi-profile (public). The hosted service's owner bot
+  and VPS deployment are in the private github.com/SelfBankt/gentifi-platform.
 - Licence: Apache 2.0 for spec, examples and code (still to confirm before going public).
 
 ## Roadmap
 
 Priority is keeping data true; the server and spec are the smaller share of effort.
 
-1. **Owner confirmation relay** (Telegram adapter built: `relay/`; WhatsApp to follow
+1. **Owner confirmation relay** (Telegram adapter built, in private gentifi-platform; WhatsApp to follow
    as a second adapter). Message to the owner with
    one-tap Accept / Decline / Suggest another time, producing the receipt the agent
    waits for. Requests expire when the owner misses the deadline. Freshness nudges

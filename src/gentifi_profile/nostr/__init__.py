@@ -1,7 +1,7 @@
 """Publish businesses to Nostr: NIP-15 stall and products, NIP-99 listings, NIP-09 deletions.
 
 Gentifi holds a key per business and signs for it, so the owner never sees Nostr
-(docs/telegram-merchant-bot-spec.md). Needs the `nostr` extra:
+(docs/nostr-mapping.md). Needs the `nostr` extra:
 `pip install -e ".[nostr]"`.
 """
 

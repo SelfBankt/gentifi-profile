@@ -5,16 +5,15 @@ Serves every profile in a folder to any MCP-capable agent:
     gentifi-mcp --profiles examples                       # stdio (Claude Desktop, etc.)
     gentifi-mcp --profiles examples --transport streamable-http
     gentifi-mcp --profiles examples --demo --now 2026-10-15T20:00:00+01:00
-    gentifi-mcp --profiles profiles --telegram --transport streamable-http
-                                                          # owners answer on Telegram
 
---telegram runs the owner confirmation relay alongside the server: pending
-requests go to the business owner's Telegram chat with one-tap buttons (see
-gentifi-relay for linking owners). Run only one copy with --telegram, over HTTP, and
-connect agents to it: Claude Desktop starts stdio servers more than once.
 --nostr-relay publishes every business to Nostr (gentifi-nostr has the details). --demo adds a tool that lets you play the business owner, so pending requests
 can be confirmed or declined. --now freezes the clock, so the example data stays
 fresh while you try things.
+
+Other installed packages can add to the server through the gentifi_profile.server_plugins
+entry point: an object with add_arguments(parser) and start(args, book), which may return
+a function that's called with the built server and the transport. A plugin is how an
+owner-confirmation channel (owners answering requests from a chat app) plugs in.
 """
 
 from __future__ import annotations
@@ -22,18 +21,17 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import threading
 from datetime import datetime
+from importlib.metadata import entry_points
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
 from .freshness import parse_time, utc_now
 from .store import Directory, RequestBook
 
-if TYPE_CHECKING:
-    from .relay.handoff import Handoff
+PLUGIN_GROUP = "gentifi_profile.server_plugins"
 
 INSTRUCTIONS = """\
 This server gives access to independent local businesses that publish a Gentifi
@@ -121,16 +119,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--demo", action="store_true", help="add the respond_as_owner tool")
     parser.add_argument("--now", default=os.environ.get("GENTIFI_NOW"),
                         help="freeze the clock at this ISO 8601 time (for demos and tests)")
-    parser.add_argument("--telegram", action="store_true",
-                        help="send pending requests to owners on Telegram (needs TELEGRAM_BOT_TOKEN, e.g. in .env)")
-    parser.add_argument("--answer-minutes", type=int, default=120,
-                        help="with --telegram: the longest an owner has to answer before a request expires "
-                             "(default 120; a profile may ask for less)")
     parser.add_argument("--nostr-relay", action="append", default=[], metavar="URL",
                         help="publish every business to this Nostr relay, and again when its listing changes "
                              "(repeat for more; needs GENTIFI_NOSTR_MASTER_KEY, see gentifi-nostr init)")
     parser.add_argument("--nostr-allow-public", action="store_true",
                         help="allow --nostr-relay addresses that aren't on this machine")
+    plugins = load_plugins()
+    for plugin in plugins:
+        plugin.add_arguments(parser)
     args = parser.parse_args(argv)
 
     fixed: datetime | None = parse_time(args.now) if args.now else None
@@ -138,56 +134,22 @@ def main(argv: list[str] | None = None) -> None:
     directory = Directory.from_folder(args.profiles or [Path(os.environ.get("GENTIFI_PROFILES", "profiles"))],
                                       clock=clock)
     book = RequestBook(directory)
-    hide_onboarding(directory)
-    handoff = None
-    if args.telegram:
-        book.max_sla_minutes = args.answer_minutes
-        handoff = start_telegram_relay(book)
+    # Plugins start before Nostr publishing, so whatever they hide is never published
+    attach = [plugin.start(args, book) for plugin in plugins]
     if args.nostr_relay:
         start_nostr_publisher(book, args.nostr_relay, args.nostr_allow_public)
     server = build_server(directory, demo=args.demo, book=book)
-    if handoff and args.transport == "streamable-http":
-        from .relay.handoff import add_routes
-        add_routes(server, handoff)
+    for add in attach:
+        if add:
+            add(server, args.transport)
     if args.transport == "streamable-http":
         server.run(args.transport, port=args.port)
     else:
         server.run(args.transport)
 
 
-def hide_onboarding(directory: Directory) -> None:
-    """Businesses whose owner is still checking their listing stay hidden, Telegram or not."""
-    from .relay.cli import db_path
-    from .relay.links import Links
-    from .relay.relay import hide_onboarding as hide
-
-    if db_path().is_file():
-        hide(directory, Links(db_path()))
-
-
-def start_telegram_relay(book: RequestBook) -> Handoff:
-    """Start the owner relay; returns the hand-off the toolkit's confirmation page uses."""
-    from .relay import Links, OwnerRelay
-    from .relay.cli import db_path, telegram_channel
-    from .relay.drafts import Drafter
-    from .relay.handoff import Handoff, load_secret, secret_file
-    from .relay.telegram import TelegramError
-
-    try:
-        channel = telegram_channel()
-        username = channel.check()
-    except TelegramError as exc:
-        sys.exit(f"gentifi-mcp: can't start the Telegram relay: {exc}")
-    links = Links(db_path())
-    drafter = Drafter.from_env(db_path().parent / "drafts")
-    relay = OwnerRelay(book, channel, links, bot_username=username, drafter=drafter)
-    if drafter is None:
-        print("gentifi-mcp: photos from owners go to the team undrafted "
-              "(set GENTIFI_AI_MODEL, with the toolkit in GENTIFI_TOOLKIT, to draft them)", file=sys.stderr)
-    threading.Thread(target=relay.run, name="gentifi-relay", daemon=True).start()
-    # stderr only: with the stdio transport, stdout carries MCP messages
-    print(f"gentifi-mcp: owner relay running as @{username}", file=sys.stderr)
-    return Handoff(book, links, load_secret(secret_file(db_path())))
+def load_plugins() -> list[Any]:
+    return [entry.load() for entry in entry_points(group=PLUGIN_GROUP)]
 
 
 def start_nostr_publisher(book: RequestBook, relays: list[str], allow_public: bool) -> None:

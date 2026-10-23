@@ -1,6 +1,0 @@
-[Unit]
-Description=Back up the Gentifi bot's database
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/gentifi-bot-backup

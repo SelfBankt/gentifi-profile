@@ -1,6 +1,6 @@
 """Each business's Nostr key, made by Gentifi and kept encrypted in SQLite.
 
-The owner never sees Nostr (docs/telegram-merchant-bot-spec.md): Gentifi holds a
+The owner never sees Nostr: Gentifi holds a
 key per business and signs for it. Secrets are encrypted with AES-256-GCM under a
 master key from GENTIFI_NOSTR_MASTER_KEY (64 hex characters, in the environment or
 .env; `gentifi-nostr init` makes one). The database alone can't sign anything.
